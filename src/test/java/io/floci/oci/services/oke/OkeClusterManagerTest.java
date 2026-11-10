@@ -393,7 +393,9 @@ class OkeClusterManagerTest {
 
         verify(specBuilder).withEntrypoint(OkeClusterManager.K3S_ENTRYPOINT);
         verify(specBuilder).withCmd(List.of("k3s", "server", "--disable-agent", "--egress-selector-mode=cluster",
-                "--disable=traefik", "--disable=local-storage",
+                "--cluster-cidr=10.244.0.0/16", "--service-cidr=10.96.0.0/16", "--cluster-dns=10.96.5.5",
+                "--kube-controller-manager-arg=node-cidr-mask-size=25",
+                "--disable=traefik", "--disable=local-storage", "--disable=metrics-server",
                 "--kube-apiserver-arg=token-auth-file=" + OkeClusterManager.TOKEN_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-config-file=" + OkeClusterManager.WEBHOOK_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-version=v1",

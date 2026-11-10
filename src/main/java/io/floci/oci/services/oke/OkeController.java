@@ -21,6 +21,7 @@ import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -36,6 +37,7 @@ import java.util.Map;
 public class OkeController {
 
     private static final String ALL_OPTIONS = "all";
+    private static final Instant ADDON_CATALOG_TIME = Instant.parse("2026-01-01T00:00:00Z");
     static final List<String> KUBECONFIG_ENDPOINTS =
             List.of("LEGACY_KUBERNETES", "PUBLIC_ENDPOINT", "PRIVATE_ENDPOINT", "VCN_HOSTNAME");
 
@@ -229,6 +231,61 @@ public class OkeController {
                 .build();
     }
 
+    // ── Add-ons ──────────────────────────────────────────────────────────────
+
+    @POST
+    @Path("/clusters/{clusterId}/addons")
+    public Response installAddon(@PathParam("clusterId") String clusterId,
+                                 @HeaderParam("if-match") String ifMatch,
+                                 InstallAddonDetails details) {
+        InstallAddonDetails req = details != null ? details : new InstallAddonDetails();
+        return accepted(service.installAddon(clusterId, req.addonName, req.version, req.configurations,
+                req.isOverrideExisting, ifMatch));
+    }
+
+    @GET
+    @Path("/clusters/{clusterId}/addons")
+    public Response listAddons(@PathParam("clusterId") String clusterId) {
+        return Response.ok(service.listAddons(clusterId).stream().map(addon -> {
+            Map<String, Object> summary = addon.toWire();
+            summary.remove("configurations");
+            return summary;
+        }).toList()).build();
+    }
+
+    @GET
+    @Path("/clusters/{clusterId}/addons/{addonName}")
+    public Response getAddon(@PathParam("clusterId") String clusterId, @PathParam("addonName") String addonName) {
+        return Response.ok(service.getAddon(clusterId, addonName).toWire()).build();
+    }
+
+    @PUT
+    @Path("/clusters/{clusterId}/addons/{addonName}")
+    public Response updateAddon(@PathParam("clusterId") String clusterId, @PathParam("addonName") String addonName,
+                                @HeaderParam("if-match") String ifMatch, UpdateAddonDetails details) {
+        UpdateAddonDetails req = details != null ? details : new UpdateAddonDetails();
+        return accepted(service.updateAddon(clusterId, addonName, req.version, req.configurations, ifMatch));
+    }
+
+    @DELETE
+    @Path("/clusters/{clusterId}/addons/{addonName}")
+    public Response disableAddon(@PathParam("clusterId") String clusterId, @PathParam("addonName") String addonName,
+                                 @QueryParam("isRemoveExistingAddOn") Boolean removeExisting,
+                                 @HeaderParam("if-match") String ifMatch) {
+        return accepted(service.disableAddon(clusterId, addonName, removeExisting, ifMatch));
+    }
+
+    /** ListAddonOptions: the add-ons floci-oci offers for a Kubernetes version. */
+    @GET
+    @Path("/addonOptions")
+    public Response listAddonOptions(@QueryParam("kubernetesVersion") String kubernetesVersion,
+                                     @QueryParam("addonName") String addonName) {
+        if (kubernetesVersion == null || kubernetesVersion.isBlank()) {
+            throw OciException.missingParameter("Missing required parameter: kubernetesVersion");
+        }
+        return Response.ok(OkeAddons.optionSummaries(kubernetesVersion, addonName, ADDON_CATALOG_TIME)).build();
+    }
+
     // ── Options ───────────────────────────────────────────────────────────────
 
     /**
@@ -393,6 +450,20 @@ public class OkeController {
                     nodeSourceDetails, sshPublicKey, nodeMetadata, nodePoolCyclingDetails,
                     nodeEvictionNodePoolSettings);
         }
+    }
+
+    /** {@code InstallAddonDetails}. */
+    public static class InstallAddonDetails {
+        public String addonName;
+        public String version;
+        public List<Map<String, Object>> configurations;
+        public Boolean isOverrideExisting;
+    }
+
+    /** {@code UpdateAddonDetails}. */
+    public static class UpdateAddonDetails {
+        public String version;
+        public List<Map<String, Object>> configurations;
     }
 
     public static class CreateNodePoolDetails extends NodePoolDetails {

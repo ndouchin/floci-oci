@@ -3,6 +3,7 @@ package io.floci.oci.services.oke.model;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -39,6 +40,7 @@ public class StoredOkeCluster {
     private String etag;
     private String nodeSubnet;
     private String joinToken;
+    private List<StoredAddon> addons = new ArrayList<>();
 
     /**
      * The OCI wire shape: excludes internal properties like {@code hostPort}, {@code apiToken},
@@ -323,6 +325,15 @@ public class StoredOkeCluster {
 
     public void setJoinToken(String joinToken) {
         this.joinToken = joinToken;
+    }
+
+    /** Add-ons installed with InstallAddon; served by the add-on operations, not part of the cluster. */
+    public List<StoredAddon> getAddons() {
+        return addons;
+    }
+
+    public void setAddons(List<StoredAddon> addons) {
+        this.addons = addons != null ? addons : new ArrayList<>();
     }
 
     @RegisterForReflection

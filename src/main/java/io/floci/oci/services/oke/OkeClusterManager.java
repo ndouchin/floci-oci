@@ -80,6 +80,8 @@ public class OkeClusterManager implements Resettable {
     private static final Set<String> NETWORKS_WITHOUT_NAME_LOOKUP = Set.of("bridge", "host", "none");
     static final String MANIFESTS_ENV = "FLOCI_OKE_MANIFESTS";
     static final String MANIFEST_FILE = "/var/lib/rancher/k3s/server/manifests/floci-oke.yaml";
+    static final String METRICS_SERVER_FILE = "/var/lib/rancher/k3s/server/manifests/floci-metrics-server.yaml";
+    private static final String ADDON_MANIFEST_ENV = "FLOCI_OKE_ADDON_MANIFEST";
     /** Where every agent of a cluster mounts the shared volume behind the {@code oci} storage class. */
     static final String OCI_VOLUMES_PATH = "/var/lib/floci-oke/oci-volumes";
     static final String TOKEN_DIR = "/var/lib/rancher/k3s/floci";
@@ -275,9 +277,11 @@ public class OkeClusterManager implements Resettable {
         if (cluster.getNodeSubnet() != null) {
             candidates.add(cluster.getNodeSubnet());
         }
+        OkeNetwork.Cidrs cidrs = OkeNetwork.of(cluster.getOptions());
         for (int octet = FIRST_SUBNET_OCTET; octet <= LAST_SUBNET_OCTET; octet++) {
             String subnet = "10.0." + octet + ".0/24";
-            if (!candidates.contains(subnet)) {
+            if (!candidates.contains(subnet) && !OkeNetwork.overlaps(subnet, cidrs.pods())
+                    && !OkeNetwork.overlaps(subnet, cidrs.services())) {
                 candidates.add(subnet);
             }
         }
@@ -306,14 +310,24 @@ public class OkeClusterManager implements Resettable {
      * default certificate SANs, which covers the host-mode endpoint; {@link #K3S_ENTRYPOINT} adds the
      * container name for network mode. The server runs no kubelet ({@code --disable-agent}) and
      * reaches the kubelets and pods through the agents' tunnels ({@code --egress-selector-mode=cluster}),
-     * so {@code kubectl get nodes} lists only the worker nodes, as on a managed control plane.
+     * so {@code kubectl get nodes} lists only the worker nodes, as on a managed control plane. The pod
+     * and service networks come from the cluster's {@code kubernetesNetworkConfig}, and each node takes a
+     * {@code /25} of the pod network, as OKE allocates with flannel. metrics-server is
+     * an optional OKE add-on, not deployed by default, so k3s's bundled one stays off; installing the
+     * {@code KubernetesMetricsServer} add-on deploys it.
      */
     static List<String> buildServerArgs(StoredOkeCluster cluster) {
+        OkeNetwork.Cidrs cidrs = OkeNetwork.of(cluster.getOptions());
         return List.of("server",
                 "--disable-agent",
                 "--egress-selector-mode=cluster",
+                "--cluster-cidr=" + cidrs.pods(),
+                "--service-cidr=" + cidrs.services(),
+                "--cluster-dns=" + cidrs.dns(),
+                "--kube-controller-manager-arg=node-cidr-mask-size=" + OkeNetwork.NODE_PODS_PREFIX,
                 "--disable=traefik",
                 "--disable=local-storage",
+                "--disable=metrics-server",
                 "--kube-apiserver-arg=token-auth-file=" + TOKEN_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-config-file=" + WEBHOOK_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-version=v1",
@@ -767,6 +781,35 @@ public class OkeClusterManager implements Resettable {
                 LOG.infov("Deleting Kubernetes node {0} of cluster {1}: no node pool has it", name, cluster.getId());
                 kubectl(cluster, List.of("delete", "node", name, "--ignore-not-found", "--wait=false"));
             }
+        }
+    }
+
+    /**
+     * Deploys metrics-server through k3s's auto-deploy directory, or removes it and the objects it
+     * made. The file lives on the server's volume, so a recreated server keeps it.
+     *
+     * @return whether the change applied
+     */
+    public boolean applyMetricsServer(StoredOkeCluster cluster, boolean installed) {
+        String script = installed
+                ? "printf '%s\\n' \"$" + ADDON_MANIFEST_ENV + "\" > " + METRICS_SERVER_FILE
+                : "printf '%s\\n' \"$" + ADDON_MANIFEST_ENV + "\" > /tmp/floci-metrics-server.yaml"
+                        + " && rm -f " + METRICS_SERVER_FILE
+                        + " && kubectl delete -f /tmp/floci-metrics-server.yaml --ignore-not-found"
+                        + " && kubectl -n kube-system delete addon floci-metrics-server --ignore-not-found";
+        try {
+            ContainerLifecycleManager.ExecResult result = lifecycleManager.exec(containerName(cluster),
+                    List.of(ADDON_MANIFEST_ENV + "=" + OkeManifests.metricsServer()), List.of("sh", "-c", script),
+                    KUBECTL_TIMEOUT);
+            if (!result.succeeded()) {
+                LOG.warnv("Could not {0} metrics-server on cluster {1}: {2}", installed ? "deploy" : "remove",
+                        cluster.getId(), result.stderr());
+            }
+            return result.succeeded();
+        } catch (RuntimeException e) {
+            LOG.warnv("Could not {0} metrics-server on cluster {1}: {2}", installed ? "deploy" : "remove",
+                    cluster.getId(), e.getMessage());
+            return false;
         }
     }
 

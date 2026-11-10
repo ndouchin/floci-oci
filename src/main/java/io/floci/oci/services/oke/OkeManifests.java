@@ -13,12 +13,18 @@ import java.nio.charset.StandardCharsets;
 final class OkeManifests {
 
     private static final String STORAGE = load("/oke/storage.yaml");
+    private static final String METRICS_SERVER = load("/oke/metrics-server.yaml");
 
     private OkeManifests() {
     }
 
     static String clusterManifests() {
         return STORAGE;
+    }
+
+    /** metrics-server, which the {@code KubernetesMetricsServer} add-on deploys. */
+    static String metricsServer() {
+        return METRICS_SERVER;
     }
 
     private static String load(String resource) {

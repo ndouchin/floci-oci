@@ -16,6 +16,7 @@ import io.floci.oci.core.storage.TenancyAwareStorageBackend;
 import io.floci.oci.core.workrequest.StoredWorkRequest;
 import io.floci.oci.core.workrequest.WorkRequestService;
 import io.floci.oci.services.identity.IdentityService;
+import io.floci.oci.services.oke.model.StoredAddon;
 import io.floci.oci.services.oke.model.StoredNode;
 import io.floci.oci.services.oke.model.StoredNodePool;
 import io.floci.oci.services.oke.model.StoredOkeCluster;
@@ -370,6 +371,9 @@ public class OkeService implements Resettable, CompartmentUsage {
         }
         LOG.infov("OKE cluster {0} is {1}", cluster.getId(), lifecycleState);
         if ("ACTIVE".equals(lifecycleState)) {
+            if (hasAddon(cluster, OkeAddons.METRICS_SERVER)) {
+                clusterManager.applyMetricsServer(cluster, true);
+            }
             requestReconcile(cluster);
         }
     }
@@ -463,6 +467,7 @@ public class OkeService implements Resettable, CompartmentUsage {
         String type = OkeClusterSettings.type(settings.type());
         Map<String, Object> endpointConfig = OkeClusterSettings.endpointConfig(settings.endpointConfig());
         Map<String, Object> options = OkeClusterSettings.createOptions(settings.options());
+        OkeNetwork.validate(options);
         Map<String, Object> imagePolicyConfig = OkeClusterSettings.imagePolicyConfig(settings.imagePolicyConfig());
         List<Map<String, Object>> podNetworkOptions =
                 OkeClusterSettings.podNetworkOptions(settings.clusterPodNetworkOptions());
@@ -995,6 +1000,116 @@ public class OkeService implements Resettable, CompartmentUsage {
             "nodepool", "DELETED", nodePoolId, "/20180222/nodePools/" + nodePoolId
         );
         return workRequests.succeeded("oke", "NODEPOOL_DELETE", pool.getCompartmentId(), List.of(res));
+    }
+
+    // ── Cluster add-ons ─────────────────────────────────────────────────────
+
+    public List<StoredAddon> listAddons(String clusterId) {
+        return List.copyOf(getCluster(clusterId).getAddons());
+    }
+
+    public StoredAddon getAddon(String clusterId, String addonName) {
+        return getCluster(clusterId).getAddons().stream()
+                .filter(addon -> addon.getName().equals(addonName))
+                .findFirst()
+                .orElseThrow(() -> OciException.notAuthorizedOrNotFound("Addon not found: " + addonName));
+    }
+
+    /**
+     * InstallAddon. The add-on must be one floci-oci offers, the cluster ACTIVE and not a basic
+     * cluster, and {@code KubernetesMetricsServer} needs {@code CertManager} first unless
+     * {@code skipAddonDependenciesCheck} is {@code true}. OCI does not document the errors for these
+     * cases: 404 for an unknown add-on, 409 Conflict for one already installed without
+     * {@code isOverrideExisting} and 400 InvalidParameter otherwise are floci-oci's choices.
+     */
+    public synchronized String installAddon(String clusterId, String addonName, String version,
+                                            List<Map<String, Object>> configurations, Boolean overrideExisting,
+                                            String ifMatch) {
+        StoredOkeCluster cluster = getCluster(clusterId);
+        Etags.checkIfMatch(ifMatch, cluster.getEtag());
+        if (addonName == null || addonName.isBlank()) {
+            throw OciException.missingParameter("Missing required parameter: addonName");
+        }
+        OkeAddons.Option option = OkeAddons.option(addonName);
+        requireAddonsAllowed(cluster);
+        requireAddonVersion(option, version);
+        boolean installed = hasAddon(cluster, addonName);
+        if (installed && !Boolean.TRUE.equals(overrideExisting)) {
+            throw OciException.conflict("Addon " + addonName + " is already installed on cluster " + clusterId);
+        }
+        if (OkeAddons.METRICS_SERVER.equals(addonName) && !hasAddon(cluster, OkeAddons.CERT_MANAGER)
+                && !"true".equalsIgnoreCase(OkeAddons.configuration(configurations, OkeAddons.SKIP_DEPENDENCIES)
+                        .orElse("false"))) {
+            throw OciException.invalidParameter("Addon " + OkeAddons.METRICS_SERVER + " depends on "
+                    + OkeAddons.CERT_MANAGER + ": install it first or set " + OkeAddons.SKIP_DEPENDENCIES + " to true");
+        }
+        cluster.getAddons().removeIf(addon -> addon.getName().equals(addonName));
+        StoredAddon addon = new StoredAddon();
+        addon.setName(addonName);
+        addon.setVersion(option.version());
+        addon.setLifecycleState("ACTIVE");
+        addon.setTimeCreated(clock.instant());
+        addon.setConfigurations(configurations);
+        cluster.getAddons().add(addon);
+        if (realMode() && OkeAddons.METRICS_SERVER.equals(addonName)) {
+            clusterManager.applyMetricsServer(cluster, true);
+        }
+        return addonChanged(cluster, addonName, "ENABLE_ADDON", "CREATED");
+    }
+
+    public synchronized String updateAddon(String clusterId, String addonName, String version,
+                                           List<Map<String, Object>> configurations, String ifMatch) {
+        StoredOkeCluster cluster = getCluster(clusterId);
+        Etags.checkIfMatch(ifMatch, cluster.getEtag());
+        StoredAddon addon = getAddon(clusterId, addonName);
+        requireAddonVersion(OkeAddons.option(addonName), version);
+        if (configurations != null) {
+            addon.setConfigurations(configurations);
+        }
+        return addonChanged(cluster, addonName, "UPDATE_ADDON", "UPDATED");
+    }
+
+    /** DisableAddon; {@code isRemoveExistingAddOn} also removes what the add-on deployed. */
+    public synchronized String disableAddon(String clusterId, String addonName, Boolean removeExisting,
+                                            String ifMatch) {
+        if (removeExisting == null) {
+            throw OciException.missingParameter("Missing required parameter: isRemoveExistingAddOn");
+        }
+        StoredOkeCluster cluster = getCluster(clusterId);
+        Etags.checkIfMatch(ifMatch, cluster.getEtag());
+        getAddon(clusterId, addonName);
+        cluster.getAddons().removeIf(addon -> addon.getName().equals(addonName));
+        if (realMode() && removeExisting && OkeAddons.METRICS_SERVER.equals(addonName)) {
+            clusterManager.applyMetricsServer(cluster, false);
+        }
+        return addonChanged(cluster, addonName, "DISABLE_ADDON", "DELETED");
+    }
+
+    private static boolean hasAddon(StoredOkeCluster cluster, String addonName) {
+        return cluster.getAddons().stream().anyMatch(addon -> addon.getName().equals(addonName));
+    }
+
+    private static void requireAddonsAllowed(StoredOkeCluster cluster) {
+        requireActive(cluster, "given add-ons");
+        if ("BASIC_CLUSTER".equals(cluster.getType())) {
+            throw OciException.invalidParameter("Cluster add-ons need an enhanced cluster; cluster "
+                    + cluster.getId() + " is a basic cluster");
+        }
+    }
+
+    private static void requireAddonVersion(OkeAddons.Option option, String version) {
+        if (version != null && !version.isBlank() && !version.equals(option.version())) {
+            throw OciException.invalidParameter("Invalid version " + version + " for addon " + option.name()
+                    + ". Supported versions: " + option.version());
+        }
+    }
+
+    private String addonChanged(StoredOkeCluster cluster, String addonName, String operation, String action) {
+        cluster.setEtag(Etags.newEtag());
+        clusters.put(cluster.getId(), cluster);
+        StoredWorkRequest.Resource res = WorkRequestService.resource("addon", action, cluster.getId(),
+                "/20180222/clusters/" + cluster.getId() + "/addons/" + addonName);
+        return workRequests.succeeded("oke", operation, cluster.getCompartmentId(), List.of(res));
     }
 
     // ── Worker node reconcile (real mode) ───────────────────────────────────

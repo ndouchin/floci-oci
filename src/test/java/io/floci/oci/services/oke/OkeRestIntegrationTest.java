@@ -406,6 +406,80 @@ class OkeRestIntegrationTest {
     }
 
     @Test
+    void theMetricsServerAddonNeedsCertManagerAndAnEnhancedCluster() {
+        given().when().get("/20180222/addonOptions")
+            .then().statusCode(400).body("code", equalTo("MissingParameter"));
+        given().queryParam("kubernetesVersion", OkeVersions.DEFAULT_VERSION)
+            .when().get("/20180222/addonOptions")
+            .then()
+                .statusCode(200)
+                .body("name", hasItem("KubernetesMetricsServer"))
+                .body("find { it.name == 'KubernetesMetricsServer' }.isEssential", equalTo(false));
+
+        String clusterId = createCluster("addon-cluster");
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "KubernetesMetricsServer"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(400).body("code", equalTo("InvalidParameter"));
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "Istio"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(404).body("code", equalTo("NotAuthorizedOrNotFound"));
+        String installRequest = given().contentType(ContentType.JSON).body(Map.of("addonName", "CertManager"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(202).extract().header("opc-work-request-id");
+        given().when().get("/20180222/workRequests/{id}", installRequest)
+            .then().statusCode(200).body("operationType", equalTo("ENABLE_ADDON")).body("status", equalTo("SUCCEEDED"));
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "KubernetesMetricsServer"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(202);
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "KubernetesMetricsServer"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(409);
+
+        given().when().get("/20180222/clusters/{id}/addons/{name}", clusterId, "KubernetesMetricsServer")
+            .then()
+                .statusCode(200)
+                .body("name", equalTo("KubernetesMetricsServer"))
+                .body("lifecycleState", equalTo("ACTIVE"))
+                .body("version", notNullValue());
+        given().when().get("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(200).body("name", equalTo(List.of("CertManager", "KubernetesMetricsServer")));
+        given().when().delete("/20180222/clusters/{id}/addons/{name}", clusterId, "KubernetesMetricsServer")
+            .then().statusCode(400).body("code", equalTo("MissingParameter"));
+        given().queryParam("isRemoveExistingAddOn", true)
+            .when().delete("/20180222/clusters/{id}/addons/{name}", clusterId, "KubernetesMetricsServer")
+            .then().statusCode(202);
+        given().when().get("/20180222/clusters/{id}/addons/{name}", clusterId, "KubernetesMetricsServer")
+            .then().statusCode(404);
+
+        Map<String, Object> basic = new HashMap<>();
+        basic.put("compartmentId", compartment);
+        basic.put("name", "basic-cluster");
+        basic.put("vcnId", VCN);
+        basic.put("kubernetesVersion", OkeVersions.DEFAULT_VERSION);
+        basic.put("type", "BASIC_CLUSTER");
+        String basicId = OkeWorkRequests.createdId(given().contentType(ContentType.JSON).body(basic)
+            .when().post("/20180222/clusters")
+            .then().statusCode(202).extract().header("opc-work-request-id"));
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "CertManager"))
+            .when().post("/20180222/clusters/{id}/addons", basicId)
+            .then().statusCode(400).body("code", equalTo("InvalidParameter"));
+    }
+
+    @Test
+    void networkConfigMustBeValidNonOverlappingCidrs() {
+        Map<String, Object> details = new HashMap<>();
+        details.put("compartmentId", compartment);
+        details.put("name", "bad-network");
+        details.put("vcnId", VCN);
+        details.put("kubernetesVersion", OkeVersions.DEFAULT_VERSION);
+        details.put("options", Map.of("kubernetesNetworkConfig",
+                Map.of("podsCidr", "10.96.0.0/16", "servicesCidr", "10.96.0.0/16")));
+        given().contentType(ContentType.JSON).body(details)
+            .when().post("/20180222/clusters")
+            .then().statusCode(400).body("code", equalTo("InvalidParameter"));
+    }
+
+    @Test
     void mockClustersCarryTheSameEndpointsAsRealOnes() {
         String clusterId = createCluster("mock-endpoints-cluster");
 

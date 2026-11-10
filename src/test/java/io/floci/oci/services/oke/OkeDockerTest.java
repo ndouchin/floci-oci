@@ -330,8 +330,9 @@ class OkeDockerTest {
         assertEquals("2", node.getString("status.capacity['nvidia.com/gpu']"));
         assertEquals("2", node.getString("status.allocatable['nvidia.com/gpu']"));
         assertEquals("VM.GPU.A10.2", node.getString("metadata.labels['node.kubernetes.io/instance-type']"));
+        List<Map<String, Object>> taints = node.getList("spec.taints");
         assertEquals(List.of(Map.of("key", "nvidia.com/gpu", "value", "present", "effect", "NoSchedule")),
-                node.getList("spec.taints"));
+                taints.stream().filter(taint -> "nvidia.com/gpu".equals(taint.get("key"))).toList());
 
         kubePost("/api/v1/namespaces/default/pods", Map.of(
                 "apiVersion", "v1", "kind", "Pod",
@@ -388,6 +389,53 @@ class OkeDockerTest {
         assertEquals("blockvolume.csi.oraclecloud.com",
                 volume.getString("metadata.annotations['pv.kubernetes.io/provisioned-by']"));
         awaitKube("/api/v1/namespaces/default/pods/writer", "status.phase", "Running");
+    }
+
+    @Test
+    @Order(25)
+    void test25_podsAndServicesUseOkesDefaultNetworks() {
+        assertEquals("10.96.0.1", kube("/api/v1/namespaces/default/services/kubernetes").getString("spec.clusterIP"));
+        assertEquals("10.96.5.5", kube("/api/v1/namespaces/kube-system/services/kube-dns").getString("spec.clusterIP"));
+        String podIp = kube("/api/v1/namespaces/default/pods/writer").getString("status.podIP");
+        assertTrue(podIp.startsWith("10.244."), podIp);
+        for (String podCidr : kube("/api/v1/nodes").<String>getList("items.spec.podCIDR")) {
+            assertTrue(podCidr.startsWith("10.244.") && podCidr.endsWith("/25"),
+                    "OKE gives each node a /25 of the pods network: " + podCidr);
+        }
+    }
+
+    @Test
+    @Order(26)
+    void test26_metricsServerRunsOnlyOnceItsAddonIsInstalled() throws InterruptedException {
+        assertEquals(404, kubeStatus("/apis/apiregistration.k8s.io/v1/apiservices/v1beta1.metrics.k8s.io"),
+                "OKE does not deploy metrics-server by default");
+
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "CertManager"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(202);
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "KubernetesMetricsServer"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(202);
+        Instant deadline = Instant.now().plus(KUBE_OBJECT_TIMEOUT);
+        int status = 0;
+        while (Instant.now().isBefore(deadline)) {
+            status = kubeStatus("/apis/metrics.k8s.io/v1beta1/nodes");
+            if (status == 200 && !kube("/apis/metrics.k8s.io/v1beta1/nodes").getList("items").isEmpty()) {
+                break;
+            }
+            Thread.sleep(3000);
+        }
+        assertEquals(200, status, "kubectl top nodes must work once the add-on is installed");
+
+        given().queryParam("isRemoveExistingAddOn", true)
+            .when().delete("/20180222/clusters/{id}/addons/{name}", clusterId, "KubernetesMetricsServer")
+            .then().statusCode(202);
+        deadline = Instant.now().plus(Duration.ofSeconds(60));
+        while (kubeStatus("/apis/apiregistration.k8s.io/v1/apiservices/v1beta1.metrics.k8s.io") != 404
+                && Instant.now().isBefore(deadline)) {
+            Thread.sleep(2000);
+        }
+        assertEquals(404, kubeStatus("/apis/apiregistration.k8s.io/v1/apiservices/v1beta1.metrics.k8s.io"));
     }
 
     @Test
