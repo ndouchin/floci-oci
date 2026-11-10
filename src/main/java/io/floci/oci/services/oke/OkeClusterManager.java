@@ -78,6 +78,10 @@ public class OkeClusterManager implements Resettable {
     static final String ENDPOINT_MODE_NETWORK = "network";
     /** Docker's built-in networks, which have no container-name lookup. */
     private static final Set<String> NETWORKS_WITHOUT_NAME_LOOKUP = Set.of("bridge", "host", "none");
+    static final String MANIFESTS_ENV = "FLOCI_OKE_MANIFESTS";
+    static final String MANIFEST_FILE = "/var/lib/rancher/k3s/server/manifests/floci-oke.yaml";
+    /** Where every agent of a cluster mounts the shared volume behind the {@code oci} storage class. */
+    static final String OCI_VOLUMES_PATH = "/var/lib/floci-oke/oci-volumes";
     static final String TOKEN_DIR = "/var/lib/rancher/k3s/floci";
     static final String TOKEN_FILE = TOKEN_DIR + "/tokens.csv";
     static final String WEBHOOK_FILE = TOKEN_DIR + "/token-webhook.yaml";
@@ -101,6 +105,8 @@ public class OkeClusterManager implements Resettable {
                     + " > " + TOKEN_FILE
                     + " && printf '%s\\n' \"$" + WEBHOOK_KUBECONFIG_ENV + "\""
                     + " > " + WEBHOOK_FILE
+                    + " && mkdir -p " + MANIFEST_FILE.substring(0, MANIFEST_FILE.lastIndexOf('/'))
+                    + " && printf '%s\\n' \"$" + MANIFESTS_ENV + "\" > " + MANIFEST_FILE
                     + " && exec /bin/k3s \"$@\" --tls-san=\"$" + TLS_SAN_ENV + "\"");
 
     public record ActiveClusterRef(String containerName, String volumeName, int hostPort) {}
@@ -179,6 +185,7 @@ public class OkeClusterManager implements Resettable {
                         .withEnv(WEBHOOK_KUBECONFIG_ENV, webhookKubeconfig(cluster))
                         .withEnv(TLS_SAN_ENV, containerName)
                         .withEnv(SERVER_ARGS_ENV, String.join(" ", serverArgs))
+                        .withEnv(MANIFESTS_ENV, OkeManifests.clusterManifests())
                         .withPortBinding(K3S_CONTAINER_PORT, hostPort)
                         .withNamedVolume(volumeName, "/var/lib/rancher/k3s")
                         .withPrimaryNetwork(network)
@@ -306,6 +313,7 @@ public class OkeClusterManager implements Resettable {
                 "--disable-agent",
                 "--egress-selector-mode=cluster",
                 "--disable=traefik",
+                "--disable=local-storage",
                 "--kube-apiserver-arg=token-auth-file=" + TOKEN_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-config-file=" + WEBHOOK_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-version=v1",
@@ -334,6 +342,7 @@ public class OkeClusterManager implements Resettable {
         List<String> env = lifecycleManager.containerEnv(containerName);
         return serverImage(cluster).equals(lifecycleManager.containerImage(containerName))
                 && env.contains(SERVER_ARGS_ENV + "=" + String.join(" ", serverArgs))
+                && env.contains(MANIFESTS_ENV + "=" + OkeManifests.clusterManifests())
                 && env.contains(API_TOKEN_ENV + "=" + cluster.getApiToken())
                 && env.contains(WEBHOOK_KUBECONFIG_ENV + "=" + webhookKubeconfig(cluster))
                 && env.contains(TLS_SAN_ENV + "=" + containerName)
@@ -596,6 +605,15 @@ public class OkeClusterManager implements Resettable {
     }
 
     /**
+     * The volume every agent of a cluster mounts at {@link #OCI_VOLUMES_PATH}: the {@code oci} storage
+     * class binds at once ({@code Immediate}), before any node is chosen, so its volumes must be
+     * reachable from every node.
+     */
+    String ociVolumesName(StoredOkeCluster cluster) {
+        return ContainerStorageHelper.dockerName(config, "oke-oci-vol-" + cluster.getId());
+    }
+
+    /**
      * Starts the k3s agent behind a node, or adopts the one already running for it. The agent joins
      * the cluster's server by container name on the cluster network, at the node's fixed address,
      * registers under that address as its node name (OKE names managed nodes after their private IP)
@@ -619,6 +637,8 @@ public class OkeClusterManager implements Resettable {
                 node.getPrivateIp() + ".node-password.k3s", "--ignore-not-found"));
         String volumeName = nodeVolumeName(node);
         lifecycleManager.ensureVolume(volumeName);
+        String ociVolumes = ociVolumesName(cluster);
+        lifecycleManager.ensureVolume(ociVolumes);
 
         OkeShapes.Size size = OkeShapes.size(pool.getNodeShape(), pool.getNodeShapeConfig());
         List<String> args = new ArrayList<>(List.of("agent",
@@ -643,6 +663,7 @@ public class OkeClusterManager implements Resettable {
                 .withPrimaryNetwork(networkName(cluster))
                 .withIpv4Address(node.getPrivateIp())
                 .withNamedVolume(volumeName, "/var/lib/rancher/k3s")
+                .withNamedVolume(ociVolumes, OCI_VOLUMES_PATH)
                 .withPrivileged(true)
                 .withLogRotation()
                 .withLabels(labels);
@@ -794,6 +815,7 @@ public class OkeClusterManager implements Resettable {
         lifecycleManager.removeIfExists(containerName);
 
         try {
+            removeVolumeIfConfigured(ociVolumesName(cluster));
             removeVolumeIfConfigured(volumeName);
         } catch (Exception e) {
             LOG.warnf(e, "Failed to remove volume '%s' for cluster '%s'", volumeName, cluster.getId());
@@ -833,10 +855,13 @@ public class OkeClusterManager implements Resettable {
             }
             lifecycleManager.removeNetwork(ContainerStorageHelper.dockerName(config, "oke-net-" + entry.getKey()));
             try {
+                String ociVolumes = ContainerStorageHelper.dockerName(config, "oke-oci-vol-" + entry.getKey());
                 if (dropVolumes) {
                     lifecycleManager.removeVolume(ref.volumeName());
+                    lifecycleManager.removeVolume(ociVolumes);
                 } else {
                     removeVolumeIfConfigured(ref.volumeName());
+                    removeVolumeIfConfigured(ociVolumes);
                 }
             } catch (Exception e) {
                 LOG.warnf(e, "Failed to remove k3s volume '%s'", ref.volumeName());

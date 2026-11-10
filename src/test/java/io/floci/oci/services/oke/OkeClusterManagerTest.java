@@ -391,12 +391,13 @@ class OkeClusterManagerTest {
 
         verify(specBuilder).withEntrypoint(OkeClusterManager.K3S_ENTRYPOINT);
         verify(specBuilder).withCmd(List.of("k3s", "server", "--disable-agent", "--egress-selector-mode=cluster",
-                "--disable=traefik",
+                "--disable=traefik", "--disable=local-storage",
                 "--kube-apiserver-arg=token-auth-file=" + OkeClusterManager.TOKEN_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-config-file=" + OkeClusterManager.WEBHOOK_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-version=v1",
                 "--kube-apiserver-arg=authentication-token-webhook-cache-ttl=30s"));
         verify(specBuilder).withEnv(OkeClusterManager.API_TOKEN_ENV, "token-servermode001");
+        verify(specBuilder).withEnv(OkeClusterManager.MANIFESTS_ENV, OkeManifests.clusterManifests());
         verify(specBuilder).withEnv(OkeClusterManager.WEBHOOK_KUBECONFIG_ENV, manager.webhookKubeconfig(cluster));
         verify(specBuilder).withEnv(OkeClusterManager.TLS_SAN_ENV,
                 ContainerStorageHelper.dockerName(config, "oke-" + cluster.getId()));
@@ -414,6 +415,7 @@ class OkeClusterManagerTest {
         assertTrue(script.contains("\"$" + OkeClusterManager.WEBHOOK_KUBECONFIG_ENV + "\" > "
                 + OkeClusterManager.WEBHOOK_FILE));
         assertTrue(script.contains("system:masters"));
+        assertTrue(script.contains("\"$" + OkeClusterManager.MANIFESTS_ENV + "\" > " + OkeClusterManager.MANIFEST_FILE));
         assertTrue(script.endsWith("exec /bin/k3s \"$@\" --tls-san=\"$" + OkeClusterManager.TLS_SAN_ENV + "\""));
     }
 
@@ -501,7 +503,8 @@ class OkeClusterManagerTest {
                 OkeClusterManager.API_TOKEN_ENV + "=" + cluster.getApiToken(),
                 OkeClusterManager.WEBHOOK_KUBECONFIG_ENV + "=" + webhookKubeconfig,
                 OkeClusterManager.TLS_SAN_ENV + "=" + tlsSan,
-                OkeClusterManager.SERVER_ARGS_ENV + "=" + String.join(" ", OkeClusterManager.buildServerArgs(cluster))));
+                OkeClusterManager.SERVER_ARGS_ENV + "=" + String.join(" ", OkeClusterManager.buildServerArgs(cluster)),
+                OkeClusterManager.MANIFESTS_ENV + "=" + OkeManifests.clusterManifests()));
         when(lifecycleManager.containerLabels(anyString())).thenReturn(
                 Map.of(ContainerStorageHelper.REGION_LABEL, "us-ashburn-1"));
 
@@ -535,7 +538,8 @@ class OkeClusterManagerTest {
                 OkeClusterManager.API_TOKEN_ENV + "=" + cluster.getApiToken(),
                 OkeClusterManager.WEBHOOK_KUBECONFIG_ENV + "=" + webhookKubeconfig,
                 OkeClusterManager.TLS_SAN_ENV + "=" + tlsSan,
-                OkeClusterManager.SERVER_ARGS_ENV + "=" + String.join(" ", OkeClusterManager.buildServerArgs(cluster))));
+                OkeClusterManager.SERVER_ARGS_ENV + "=" + String.join(" ", OkeClusterManager.buildServerArgs(cluster)),
+                OkeClusterManager.MANIFESTS_ENV + "=" + OkeManifests.clusterManifests()));
         when(lifecycleManager.containerLabels(anyString())).thenReturn(
                 Map.of(ContainerStorageHelper.REGION_LABEL, "us-ashburn-1"));
         when(lifecycleManager.createAndStart(any())).thenReturn(new ContainerLifecycleManager.ContainerInfo("c-new", Map.of()));

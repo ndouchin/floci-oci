@@ -75,6 +75,7 @@ class OkeDockerTest {
     private static final String USER = "ocid1.user.oc1..okedockeruser";
     private static final Duration ACTIVE_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration NODE_POOL_TIMEOUT = Duration.ofSeconds(240);
+    private static final Duration KUBE_OBJECT_TIMEOUT = Duration.ofSeconds(180);
     private static final String WORKER_SUBNET = "ocid1.subnet.oc1.iad.aaaaaaaadockerworkers";
 
     @Inject
@@ -308,6 +309,51 @@ class OkeDockerTest {
     }
 
     @Test
+    @Order(20)
+    void test20_theStorageClassesAreOkesAndVolumesBindOnTheDefaultOne() throws InterruptedException {
+        JsonPath classes = kube("/apis/storage.k8s.io/v1/storageclasses");
+        assertEquals(List.of("oci", "oci-bv"), classes.getList("items.metadata.name").stream().sorted().toList(),
+                "k3s's own local-path class must be gone");
+        JsonPath ociBv = kube("/apis/storage.k8s.io/v1/storageclasses/oci-bv");
+        assertEquals("blockvolume.csi.oraclecloud.com", ociBv.getString("provisioner"));
+        assertEquals("WaitForFirstConsumer", ociBv.getString("volumeBindingMode"));
+        assertTrue(ociBv.getBoolean("allowVolumeExpansion"));
+        assertEquals("true", ociBv.getString("metadata.annotations['storageclass.kubernetes.io/is-default-class']"));
+        JsonPath oci = kube("/apis/storage.k8s.io/v1/storageclasses/oci");
+        assertEquals("oracle.com/oci", oci.getString("provisioner"));
+        assertEquals("Immediate", oci.getString("volumeBindingMode"));
+
+        kubePost("/api/v1/namespaces/default/persistentvolumeclaims", Map.of(
+                "apiVersion", "v1", "kind", "PersistentVolumeClaim",
+                "metadata", Map.of("name", "data"),
+                "spec", Map.of("accessModes", List.of("ReadWriteOnce"),
+                        "resources", Map.of("requests", Map.of("storage", "50Gi")))));
+        kubePost("/api/v1/namespaces/default/persistentvolumeclaims", Map.of(
+                "apiVersion", "v1", "kind", "PersistentVolumeClaim",
+                "metadata", Map.of("name", "legacy"),
+                "spec", Map.of("storageClassName", "oci", "accessModes", List.of("ReadWriteOnce"),
+                        "resources", Map.of("requests", Map.of("storage", "50Gi")))));
+        kubePost("/api/v1/namespaces/default/pods", Map.of(
+                "apiVersion", "v1", "kind", "Pod",
+                "metadata", Map.of("name", "writer"),
+                "spec", Map.of(
+                        "containers", List.of(Map.of("name", "writer", "image", "rancher/mirrored-library-busybox:1.37.0",
+                                "command", List.of("sh", "-c", "echo ok > /data/ok && sleep 3600"),
+                                "volumeMounts", List.of(Map.of("name", "data", "mountPath", "/data")))),
+                        "volumes", List.of(Map.of("name", "data",
+                                "persistentVolumeClaim", Map.of("claimName", "data"))))));
+
+        awaitKube("/api/v1/namespaces/default/persistentvolumeclaims/legacy", "status.phase", "Bound");
+        awaitKube("/api/v1/namespaces/default/persistentvolumeclaims/data", "status.phase", "Bound");
+        JsonPath claim = kube("/api/v1/namespaces/default/persistentvolumeclaims/data");
+        assertEquals("oci-bv", claim.getString("spec.storageClassName"));
+        JsonPath volume = kube("/api/v1/persistentvolumes/" + claim.getString("spec.volumeName"));
+        assertEquals("blockvolume.csi.oraclecloud.com",
+                volume.getString("metadata.annotations['pv.kubernetes.io/provisioned-by']"));
+        awaitKube("/api/v1/namespaces/default/pods/writer", "status.phase", "Running");
+    }
+
+    @Test
     @Order(99)
     void test99_deleteRemovesTheSidecarAgentsNetworkAndEveryVolume() throws InterruptedException {
         String container = ContainerStorageHelper.dockerName(config, "oke-" + clusterId);
@@ -368,6 +414,31 @@ class OkeDockerTest {
             Thread.sleep(2000);
         }
         assertEquals(state, current, "node pool " + poolId + " did not become " + state);
+    }
+
+    private void awaitKube(String path, String field, String expected) throws InterruptedException {
+        Instant deadline = Instant.now().plus(KUBE_OBJECT_TIMEOUT);
+        String current = null;
+        while (Instant.now().isBefore(deadline)) {
+            current = kube(path).getString(field);
+            if (expected.equals(current)) {
+                return;
+            }
+            Thread.sleep(2000);
+        }
+        assertEquals(expected, current, path + " " + field);
+    }
+
+    private void kubePost(String path, Map<String, Object> body) {
+        given()
+            .config(RestAssuredConfig.config().sslConfig(SSLConfig.sslConfig().trustStore(clusterCa)))
+            .baseUri("https://127.0.0.1")
+            .port(apiPort)
+            .header("Authorization", "Bearer " + staticToken())
+            .contentType(ContentType.JSON)
+            .body(body)
+            .when().post(path)
+            .then().statusCode(201);
     }
 
     private String staticToken() {
