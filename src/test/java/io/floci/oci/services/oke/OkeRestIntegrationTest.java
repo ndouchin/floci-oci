@@ -19,12 +19,15 @@ import java.util.Map;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.emptyString;
+import static org.hamcrest.Matchers.endsWith;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasKey;
+import static org.hamcrest.Matchers.matchesPattern;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.startsWith;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -316,6 +319,94 @@ class OkeRestIntegrationTest {
             .when().post("/20180222/clusters")
             .then().statusCode(202)
             .extract().header("opc-work-request-id"));
+    }
+
+    @Test
+    void mockClustersCarryTheSameEndpointsAsRealOnes() {
+        String clusterId = createCluster("mock-endpoints-cluster");
+
+        given().when().get("/20180222/clusters/{id}", clusterId)
+            .then()
+                .statusCode(200)
+                .body("lifecycleState", equalTo("ACTIVE"))
+                .body("endpoints.kubernetes", equalTo("https://127.0.0.1:6443"))
+                .body("endpoints.privateEndpoint", equalTo("10.0.0.10:6443"));
+    }
+
+    @Test
+    void nodePoolReadsBackItsPlacementShapeAndLabelsAndListsItsNodes() {
+        String clusterId = createCluster("pool-model-cluster");
+        String subnetA = "ocid1.subnet.oc1.iad.aaaaaaaarestworkersubneta";
+        String subnetB = "ocid1.subnet.oc1.iad.aaaaaaaarestworkersubnetb";
+        Map<String, Object> details = new HashMap<>();
+        details.put("compartmentId", compartment);
+        details.put("clusterId", clusterId);
+        details.put("name", "pool-model");
+        details.put("kubernetesVersion", "v1.36.4");
+        details.put("nodeShape", "VM.Standard.E4.Flex");
+        details.put("nodeShapeConfig", Map.of("ocpus", 2, "memoryInGBs", 16));
+        details.put("initialNodeLabels", List.of(Map.of("key", "team", "value", "payments")));
+        details.put("nodeSourceDetails", Map.of("sourceType", "IMAGE", "imageId", "ocid1.image.oc1.iad.restimage"));
+        details.put("nodeConfigDetails", Map.of(
+                "size", 3,
+                "placementConfigs", List.of(
+                        Map.of("availabilityDomain", "Floc:US-ASHBURN-AD-1", "subnetId", subnetA),
+                        Map.of("availabilityDomain", "Floc:US-ASHBURN-AD-2", "subnetId", subnetB,
+                                "faultDomains", List.of("FAULT-DOMAIN-3")))));
+        String poolId = OkeWorkRequests.createdId(given().contentType(ContentType.JSON).body(details)
+            .when().post("/20180222/nodePools")
+            .then().statusCode(202).extract().header("opc-work-request-id"));
+
+        given().when().get("/20180222/nodePools/{id}", poolId)
+            .then()
+                .statusCode(200)
+                .body("lifecycleState", equalTo("ACTIVE"))
+                .body("nodeShapeConfig.ocpus", equalTo(2.0f))
+                .body("nodeShapeConfig.memoryInGBs", equalTo(16.0f))
+                .body("initialNodeLabels[0].key", equalTo("team"))
+                .body("initialNodeLabels[0].value", equalTo("payments"))
+                .body("nodeSourceDetails.imageId", equalTo("ocid1.image.oc1.iad.restimage"))
+                .body("nodeConfigDetails.size", equalTo(3))
+                .body("nodeConfigDetails.placementConfigs[1].faultDomains[0]", equalTo("FAULT-DOMAIN-3"))
+                .body("nodes.size()", equalTo(3))
+                .body("nodes[0].id", startsWith("ocid1.instance.oc1.iad."))
+                .body("nodes[0].name", matchesPattern("oke-c[a-z0-9]{11}-n[a-z0-9]{11}-s[a-z0-9]{11}-0"))
+                .body("nodes[0].nodePoolId", equalTo(poolId))
+                .body("nodes[0].subnetId", equalTo(subnetA))
+                .body("nodes[0].availabilityDomain", equalTo("Floc:US-ASHBURN-AD-1"))
+                .body("nodes[0].faultDomain", equalTo("FAULT-DOMAIN-1"))
+                .body("nodes[0].kubernetesVersion", equalTo("v1.36.4"))
+                .body("nodes[0].lifecycleState", equalTo("ACTIVE"))
+                .body("nodes[0].privateIp", notNullValue())
+                .body("nodes[0]", not(hasKey("containerName")))
+                .body("nodes[1].subnetId", equalTo(subnetB))
+                .body("nodes[1].faultDomain", equalTo("FAULT-DOMAIN-3"))
+                .body("nodes[2].subnetId", equalTo(subnetA))
+                .body("nodes[2].name", endsWith("-1"))
+                .body("$", not(hasKey("timeCreated")));
+    }
+
+    @Test
+    void nodePoolWithoutNodeConfigDetailsRunsQuantityPerSubnetNodesInEachSubnet() {
+        String clusterId = createCluster("pool-legacy-cluster");
+        String poolId = OkeWorkRequests.createdId(given().contentType(ContentType.JSON)
+            .body(Map.of(
+                "compartmentId", compartment,
+                "clusterId", clusterId,
+                "name", "pool-legacy",
+                "kubernetesVersion", "v1.36.4",
+                "nodeShape", "VM.Standard2.1",
+                "quantityPerSubnet", 2,
+                "subnetIds", List.of("ocid1.subnet.oc1.iad.legacya", "ocid1.subnet.oc1.iad.legacyb")))
+            .when().post("/20180222/nodePools")
+            .then().statusCode(202).extract().header("opc-work-request-id"));
+
+        given().when().get("/20180222/nodePools/{id}", poolId)
+            .then()
+                .statusCode(200)
+                .body("quantityPerSubnet", equalTo(2))
+                .body("subnetIds.size()", equalTo(2))
+                .body("nodes.size()", equalTo(4));
     }
 
     @Test

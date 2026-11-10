@@ -473,7 +473,7 @@ class OkeServiceTest {
         realWorkRequests = new WorkRequestService(new InMemoryStorage<>(), realConfig);
         clock = new MutableClock(Instant.parse("2026-10-01T12:00:00Z"));
         return new OkeService(clusters, nodePools, realConfig, null, realWorkRequests, readinessManager,
-                () -> TENANCY, clock, OciContext.fromConfig(realConfig));
+                () -> TENANCY, clock, OciContext.fromConfig(realConfig), null);
     }
 
     @Test

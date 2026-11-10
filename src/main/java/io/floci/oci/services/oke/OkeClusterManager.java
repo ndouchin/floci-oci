@@ -116,15 +116,10 @@ public class OkeClusterManager implements Resettable {
     }
 
     /**
-     * Starts (or adopts) the k3s sidecar and sets the cluster endpoints. In real mode the
-     * lifecycle state is left to the caller: the cluster becomes ACTIVE only once
-     * {@link #probeReady} succeeds. Mock mode marks it ACTIVE at once.
+     * Starts (or adopts) the k3s sidecar and sets the cluster endpoints. The lifecycle state is
+     * left to the caller: the cluster becomes ACTIVE only once {@link #probeReady} succeeds.
      */
     public void startCluster(StoredOkeCluster cluster) {
-        if (config.services().oke().mock()) {
-            cluster.setLifecycleState("ACTIVE");
-            return;
-        }
         if (cluster.getApiToken() == null || cluster.getApiToken().isBlank()) {
             throw new IllegalStateException("OKE cluster " + cluster.getId() + " has no API token");
         }
@@ -498,7 +493,7 @@ public class OkeClusterManager implements Resettable {
     }
 
     public void registerExistingCluster(StoredOkeCluster cluster) {
-        if (cluster == null || cluster.getId() == null || config.services().oke().mock()) {
+        if (cluster == null || cluster.getId() == null) {
             return;
         }
         startCluster(cluster);

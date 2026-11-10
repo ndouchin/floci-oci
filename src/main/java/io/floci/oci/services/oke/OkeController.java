@@ -171,7 +171,8 @@ public class OkeController {
                 req.nodeShape,
                 req.quantityPerSubnet,
                 req.freeformTags,
-                req.definedTags
+                req.definedTags,
+                req.settings()
             );
 
             // CreateNodePool has no response body either.
@@ -185,7 +186,7 @@ public class OkeController {
     @Path("/nodePools/{nodePoolId}")
     public Response getNodePool(@PathParam("nodePoolId") String nodePoolId) {
         StoredNodePool pool = service.getNodePool(nodePoolId);
-        return Response.ok(pool).build();
+        return Response.ok(pool.toWire()).build();
     }
 
     @GET
@@ -193,19 +194,18 @@ public class OkeController {
     public Response listNodePools(@QueryParam("compartmentId") String compartmentId,
                                   @QueryParam("clusterId") String clusterId) {
         compartments.requireInQuery(compartmentId);
-        List<StoredNodePool> pools = service.listNodePools(compartmentId, clusterId);
+        List<Map<String, Object>> pools = service.listNodePools(compartmentId, clusterId).stream()
+                .map(StoredNodePool::toWire)
+                .toList();
         return Response.ok(pools).build();
     }
 
     @PUT
     @Path("/nodePools/{nodePoolId}")
     public Response updateNodePool(@PathParam("nodePoolId") String nodePoolId, UpdateNodePoolDetails details) {
-        String workRequestId = service.updateNodePool(
-            nodePoolId,
-            details != null ? details.name : null,
-            details != null ? details.kubernetesVersion : null,
-            details != null ? details.quantityPerSubnet : null
-        );
+        UpdateNodePoolDetails req = details != null ? details : new UpdateNodePoolDetails();
+        String workRequestId = service.updateNodePool(nodePoolId, req.name, req.kubernetesVersion,
+                req.quantityPerSubnet, req.nodeShape, req.freeformTags, req.definedTags, req.settings());
         return Response.status(Response.Status.ACCEPTED)
                 .header("opc-work-request-id", workRequestId)
                 .build();
@@ -334,20 +334,36 @@ public class OkeController {
         public String endpoint;
     }
 
-    public static class CreateNodePoolDetails {
-        public String compartmentId;
-        public String clusterId;
+    /** The node pool fields CreateNodePoolDetails and UpdateNodePoolDetails share. */
+    public static class NodePoolDetails {
         public String name;
         public String kubernetesVersion;
         public String nodeShape;
-        public int quantityPerSubnet;
+        public Integer quantityPerSubnet;
+        public List<String> subnetIds;
+        public Map<String, Object> nodeConfigDetails;
+        public Map<String, Object> nodeShapeConfig;
+        public List<Map<String, Object>> initialNodeLabels;
+        public Map<String, Object> nodeSourceDetails;
+        public String sshPublicKey;
+        public Map<String, String> nodeMetadata;
+        public Map<String, Object> nodePoolCyclingDetails;
+        public Map<String, Object> nodeEvictionNodePoolSettings;
         public Map<String, String> freeformTags;
         public Map<String, Map<String, Object>> definedTags;
+
+        OkeService.NodePoolSettings settings() {
+            return new OkeService.NodePoolSettings(subnetIds, nodeConfigDetails, nodeShapeConfig, initialNodeLabels,
+                    nodeSourceDetails, sshPublicKey, nodeMetadata, nodePoolCyclingDetails,
+                    nodeEvictionNodePoolSettings);
+        }
     }
 
-    public static class UpdateNodePoolDetails {
-        public String name;
-        public String kubernetesVersion;
-        public Integer quantityPerSubnet;
+    public static class CreateNodePoolDetails extends NodePoolDetails {
+        public String compartmentId;
+        public String clusterId;
+    }
+
+    public static class UpdateNodePoolDetails extends NodePoolDetails {
     }
 }
