@@ -726,6 +726,46 @@ class OkeServiceTest {
     }
 
     @Test
+    void aNewNodePoolVersionReachesRunningNodesOnlyThroughCycling() {
+        String clusterId = service.createCluster(COMPARTMENT, "cycling", VCN, "v1.36.4", null, null, null)
+                .cluster().getId();
+        StoredNodePool pool = service.createNodePool(COMPARTMENT, clusterId, "cycled", "v1.35.2", "VM.Standard2.1",
+                null, null, null, placedIn(2)).nodePool();
+        List<String> originalIds = pool.getNodes().stream().map(StoredNode::getId).toList();
+
+        service.updateNodePool(pool.getId(), null, "v1.35.2", null);
+        service.updateNodePool(pool.getId(), null, "v1.36.4", null);
+        assertEquals(List.of("v1.35.2", "v1.35.2"), service.getNodePool(pool.getId()).getNodes().stream()
+                .map(StoredNode::getKubernetesVersion).toList(), "running nodes keep their version without cycling");
+
+        service.updateNodePool(pool.getId(), null, null, null, null, null, null, new OkeService.NodePoolSettings(
+                null, Map.of("size", 3), null, null, null, null, null, null, null));
+        assertEquals("v1.36.4", service.getNodePool(pool.getId()).getNodes().get(2).getKubernetesVersion(),
+                "a new node takes the pool's version");
+
+        String bootVolumeClusterId = service.createCluster(COMPARTMENT, "bootvolume", VCN, "v1.36.4", null, null, null)
+                .cluster().getId();
+        StoredNodePool kept = service.createNodePool(COMPARTMENT, bootVolumeClusterId, "kept", "v1.35.2",
+                "VM.Standard2.1", null, null, null, placedIn(1)).nodePool();
+        String keptId = kept.getNodes().getFirst().getId();
+        service.updateNodePool(kept.getId(), null, "v1.36.4", null, null, null, null, new OkeService.NodePoolSettings(
+                null, null, null, null, null, null, null,
+                Map.of("isNodeCyclingEnabled", true, "cycleModes", List.of("BOOT_VOLUME_REPLACE")), null));
+        assertEquals(keptId, service.getNodePool(kept.getId()).getNodes().getFirst().getId());
+        assertEquals("v1.36.4", service.getNodePool(kept.getId()).getNodes().getFirst().getKubernetesVersion());
+
+        StoredNodePool replaced = service.createNodePool(COMPARTMENT, bootVolumeClusterId, "replaced", "v1.35.2",
+                "VM.Standard2.1", null, null, null, placedIn(2)).nodePool();
+        service.updateNodePool(replaced.getId(), null, "v1.36.4", null, null, null, null,
+                new OkeService.NodePoolSettings(null, null, null, null, null, null, null,
+                        Map.of("isNodeCyclingEnabled", true), null));
+        List<StoredNode> after = service.getNodePool(replaced.getId()).getNodes();
+        assertEquals(2, after.size());
+        assertTrue(after.stream().allMatch(node -> "v1.36.4".equals(node.getKubernetesVersion())
+                && !originalIds.contains(node.getId())));
+    }
+
+    @Test
     void anEmptyRealNodePoolIsActiveAtOnce() {
         OkeService service = realModeService();
         String clusterId = activeRealCluster(service, "empty");

@@ -818,6 +818,40 @@ public class OkeService implements Resettable, CompartmentUsage {
         return removed;
     }
 
+    private static boolean cyclingEnabled(StoredNodePool pool) {
+        Map<String, Object> cycling = pool.getNodePoolCyclingDetails();
+        return cycling != null && Boolean.TRUE.equals(cycling.get("isNodeCyclingEnabled"));
+    }
+
+    /**
+     * Node cycling after a version change ({@code nodePoolCyclingDetails.isNodeCyclingEnabled}):
+     * {@code BOOT_VOLUME_REPLACE} keeps each node (its instance, address and name) and restarts it on
+     * the new version; {@code INSTANCE_REPLACE}, the default here since the SDK states none, replaces
+     * every node with a new one. Without cycling, OKE leaves running nodes on their version and only
+     * new nodes take the pool's ("Upgrading Managed Nodes"). floci-oci replaces all nodes at once,
+     * not {@code maximumSurge} and {@code maximumUnavailable} at a time.
+     */
+    private void cycleNodes(StoredOkeCluster cluster, StoredNodePool pool) {
+        Object modes = pool.getNodePoolCyclingDetails().get("cycleModes");
+        boolean bootVolumeReplace = modes instanceof List<?> list && list.contains("BOOT_VOLUME_REPLACE");
+        if (bootVolumeReplace) {
+            for (StoredNode node : pool.getNodes()) {
+                node.setKubernetesVersion(pool.getKubernetesVersion());
+                node.setLifecycleState(realMode() ? "UPDATING" : "ACTIVE");
+                finishedNodes.remove(node.getId());
+            }
+            return;
+        }
+        List<StoredNode> replaced = new ArrayList<>(pool.getNodes());
+        pool.getNodes().clear();
+        for (StoredNode node : replaced) {
+            finishedNodes.remove(node.getId());
+            if (realMode()) {
+                clusterManager.removeNode(cluster, node, true);
+            }
+        }
+    }
+
     /** The availability domain of nodes placed through the deprecated {@code subnetIds}. */
     private String defaultAvailabilityDomain() {
         if (identity == null) {
@@ -864,8 +898,9 @@ public class OkeService implements Resettable, CompartmentUsage {
             throw OciException.invalidParameter("quantityPerSubnet must not be negative");
         }
         StoredOkeCluster cluster = getCluster(pool.getClusterId());
-        if (kubernetesVersion != null && !kubernetesVersion.isBlank()
-                && !kubernetesVersion.equals(pool.getKubernetesVersion())) {
+        boolean newVersion = kubernetesVersion != null && !kubernetesVersion.isBlank()
+                && !kubernetesVersion.equals(pool.getKubernetesVersion());
+        if (newVersion) {
             OkeVersions.requireNodePoolVersion(cluster.getKubernetesVersion(), kubernetesVersion);
         }
         if (name != null && !name.isBlank()) {
@@ -915,6 +950,9 @@ public class OkeService implements Resettable, CompartmentUsage {
         }
         if (definedTags != null) {
             pool.setDefinedTags(definedTags);
+        }
+        if (newVersion && cyclingEnabled(pool)) {
+            cycleNodes(cluster, pool);
         }
         resizeNodes(cluster, pool);
 
