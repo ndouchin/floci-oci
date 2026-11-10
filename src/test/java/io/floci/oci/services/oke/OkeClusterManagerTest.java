@@ -9,6 +9,8 @@ import io.floci.oci.core.common.docker.ContainerStorageHelper;
 import io.floci.oci.core.common.docker.CurrentContainerNetworkResolver;
 import io.floci.oci.core.common.docker.DockerHostResolver;
 import io.floci.oci.core.common.docker.PortAllocator;
+import io.floci.oci.services.oke.model.StoredNode;
+import io.floci.oci.services.oke.model.StoredNodePool;
 import io.floci.oci.services.oke.model.StoredOkeCluster;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -405,6 +407,72 @@ class OkeClusterManagerTest {
         verify(specBuilder).withDockerNetwork(Optional.empty());
         verify(specBuilder).withHostDockerInternalOnLinux();
         assertNull(cluster.getLifecycleState(), "real mode leaves ACTIVE to the readiness poller");
+    }
+
+    private StoredNodePool agentPool(String shape) {
+        StoredNodePool pool = new StoredNodePool();
+        pool.setId("ocid1.nodepool.oc1.iad.agentpool");
+        pool.setName("agents");
+        pool.setCompartmentId("ocid1.compartment.oc1..agents");
+        pool.setNodeShape(shape);
+        return pool;
+    }
+
+    private StoredNode agentNode() {
+        StoredNode node = new StoredNode();
+        node.setId("ocid1.instance.oc1.iad.agentnode");
+        node.setName("oke-cagent-nagent-sagent-0");
+        node.setPrivateIp("10.0.10.16");
+        node.setAvailabilityDomain("Floc:US-ASHBURN-AD-1");
+        node.setFaultDomain("FAULT-DOMAIN-1");
+        node.setKubernetesVersion("v1.35.2");
+        return node;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> agentArgs(String shape) {
+        lenient().when(specBuilder.withIpv4Address(anyString())).thenReturn(specBuilder);
+        lenient().when(specBuilder.withNamedVolume(anyString(), anyString())).thenReturn(specBuilder);
+        lenient().when(specBuilder.withLogRotation()).thenReturn(specBuilder);
+        lenient().when(specBuilder.withMemoryBytes(org.mockito.ArgumentMatchers.anyLong())).thenReturn(specBuilder);
+        lenient().when(specBuilder.withNanoCpus(org.mockito.ArgumentMatchers.anyLong())).thenReturn(specBuilder);
+        lenient().when(lifecycleManager.exec(anyString(), any(), anyList(), any()))
+                .thenReturn(new ContainerLifecycleManager.ExecResult(0, "", ""));
+        lenient().when(lifecycleManager.hostResources())
+                .thenReturn(Optional.of(new ContainerLifecycleManager.HostResources(6, 10L << 30)));
+        StoredOkeCluster cluster = adoptableCluster("ocid1.cluster.oc1.iad.agents001");
+        cluster.setJoinToken("K10hash::server:secret");
+
+        assertTrue(manager.ensureNode(cluster, agentPool(shape), agentNode()));
+
+        ArgumentCaptor<List<String>> cmd = ArgumentCaptor.forClass(List.class);
+        verify(specBuilder).withCmd(cmd.capture());
+        verify(specBuilder).withEnv("K3S_TOKEN", "K10hash::server:secret");
+        verify(specBuilder).withEnv("K3S_URL", "https://" + containerName(cluster) + ":6443");
+        verify(specBuilder).withPrimaryNetwork(ContainerStorageHelper.dockerName(config, "oke-net-" + cluster.getId()));
+        verify(specBuilder).withIpv4Address("10.0.10.16");
+        return cmd.getValue();
+    }
+
+    @Test
+    void anAgentRegistersUnderItsAddressWithAnOciProviderIdAndOkeLabels() {
+        List<String> args = agentArgs("VM.Standard.E4.Flex");
+
+        assertEquals("agent", args.getFirst());
+        assertTrue(args.contains("--node-name=10.0.10.16"));
+        assertTrue(args.contains("--kubelet-arg=provider-id=oci://ocid1.instance.oc1.iad.agentnode"));
+        assertTrue(args.contains("--node-label=node.kubernetes.io/instance-type=VM.Standard.E4.Flex"));
+        assertTrue(args.contains("--node-label=topology.kubernetes.io/zone=US-ASHBURN-AD-1"));
+        assertTrue(args.contains("--kubelet-arg=system-reserved=cpu=4000m"), args.toString());
+        assertFalse(args.stream().anyMatch(arg -> arg.startsWith("--node-taint")));
+        verify(specBuilder).withNanoCpus(2_000_000_000L);
+    }
+
+    @Test
+    void aGpuShapeAgentCarriesOkesGpuTaint() {
+        List<String> args = agentArgs("VM.GPU.A10.1");
+
+        assertTrue(args.contains("--node-taint=nvidia.com/gpu=present:NoSchedule"));
     }
 
     @Test

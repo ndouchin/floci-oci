@@ -273,7 +273,7 @@ public class OkeController {
         }
         Map<String, Object> options = new LinkedHashMap<>();
         options.put("kubernetesVersions", versions);
-        options.put("shapes", List.of("VM.Standard.E4.Flex", "VM.Standard2.1", "VM.Standard3.Flex"));
+        options.put("shapes", OkeShapes.names());
         return Response.ok(options).build();
     }
 

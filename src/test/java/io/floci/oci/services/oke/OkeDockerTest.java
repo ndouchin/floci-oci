@@ -309,6 +309,43 @@ class OkeDockerTest {
     }
 
     @Test
+    @Order(15)
+    void test15_aGpuShapeNodeAdvertisesNvidiaGpusAndCarriesOkesGpuTaint() throws InterruptedException {
+        String gpuWorkRequest = given().contentType(ContentType.JSON)
+            .body(Map.of(
+                "compartmentId", compartment,
+                "clusterId", clusterId,
+                "name", "gpus",
+                "nodeShape", "VM.GPU.A10.2",
+                "nodeConfigDetails", Map.of("size", 1, "placementConfigs", List.of(
+                        Map.of("availabilityDomain", "Floc:US-ASHBURN-AD-2", "subnetId", WORKER_SUBNET)))))
+            .when().post("/20180222/nodePools")
+            .then().statusCode(202).extract().header("opc-work-request-id");
+        String gpuPool = OkeWorkRequests.createdId(gpuWorkRequest);
+        awaitNodePool(gpuPool, "ACTIVE");
+        String gpuNode = given().when().get("/20180222/nodePools/{id}", gpuPool)
+            .then().statusCode(200).extract().path("nodes[0].privateIp");
+
+        JsonPath node = kube("/api/v1/nodes/" + gpuNode);
+        assertEquals("2", node.getString("status.capacity['nvidia.com/gpu']"));
+        assertEquals("2", node.getString("status.allocatable['nvidia.com/gpu']"));
+        assertEquals("VM.GPU.A10.2", node.getString("metadata.labels['node.kubernetes.io/instance-type']"));
+        assertEquals(List.of(Map.of("key", "nvidia.com/gpu", "value", "present", "effect", "NoSchedule")),
+                node.getList("spec.taints"));
+
+        kubePost("/api/v1/namespaces/default/pods", Map.of(
+                "apiVersion", "v1", "kind", "Pod",
+                "metadata", Map.of("name", "cuda"),
+                "spec", Map.of(
+                        "tolerations", List.of(Map.of("key", "nvidia.com/gpu", "operator", "Exists",
+                                "effect", "NoSchedule")),
+                        "containers", List.of(Map.of("name", "cuda", "image", "rancher/mirrored-library-busybox:1.37.0",
+                                "command", List.of("sleep", "3600"),
+                                "resources", Map.of("limits", Map.of("nvidia.com/gpu", 1)))))));
+        awaitKube("/api/v1/namespaces/default/pods/cuda", "spec.nodeName", gpuNode);
+    }
+
+    @Test
     @Order(20)
     void test20_theStorageClassesAreOkesAndVolumesBindOnTheDefaultOne() throws InterruptedException {
         JsonPath classes = kube("/apis/storage.k8s.io/v1/storageclasses");

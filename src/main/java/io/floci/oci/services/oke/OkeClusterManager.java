@@ -647,6 +647,9 @@ public class OkeClusterManager implements Resettable {
                 "--kubelet-arg=provider-id=" + OkeNodeLabels.providerId(node)));
         OkeNodeLabels.registrationLabels(pool, node, clusterRegion(cluster))
                 .forEach((key, value) -> args.add("--node-label=" + key + "=" + value));
+        if (size.gpus() > 0) {
+            args.add("--node-taint=" + OkeNodeLabels.GPU_TAINT);
+        }
         Optional<OkeNodeCapacity.Limits> limits = OkeNodeCapacity.calculate(size, hostResources());
         limits.ifPresent(l -> args.addAll(l.kubeletArgs()));
 
@@ -732,7 +735,9 @@ public class OkeClusterManager implements Resettable {
 
     /**
      * What OKE adds once a node has joined and a kubelet cannot set on itself: the {@code node} role
-     * and {@code initialNodeLabels} in the Kubernetes namespaces, and the compartment annotation.
+     * and {@code initialNodeLabels} in the Kubernetes namespaces, and the compartment annotation. A
+     * GPU shape's node also advertises its GPUs as {@code nvidia.com/gpu}, which on OKE the NVIDIA
+     * device plugin does; there is no GPU here, so the capacity is set on the node status directly.
      *
      * @return whether every change applied
      */
@@ -741,7 +746,15 @@ public class OkeClusterManager implements Resettable {
         OkeNodeLabels.postRegistrationLabels(pool).forEach((key, value) -> label.add(key + "=" + value));
         List<String> annotate = new ArrayList<>(List.of("annotate", "node", node.getPrivateIp(), "--overwrite"));
         OkeNodeLabels.annotations(pool).forEach((key, value) -> annotate.add(key + "=" + value));
-        return kubectl(cluster, label).succeeded() && kubectl(cluster, annotate).succeeded();
+        boolean applied = kubectl(cluster, label).succeeded() && kubectl(cluster, annotate).succeeded();
+        int gpus = OkeShapes.size(pool.getNodeShape(), pool.getNodeShapeConfig()).gpus();
+        if (applied && gpus > 0) {
+            String quantity = "\"" + OkeNodeLabels.GPU_RESOURCE + "\":\"" + gpus + "\"";
+            applied = kubectl(cluster, List.of("patch", "node", node.getPrivateIp(), "--subresource=status",
+                    "--type=merge", "-p", "{\"status\":{\"capacity\":{" + quantity + "},\"allocatable\":{"
+                            + quantity + "}}}")).succeeded();
+        }
+        return applied;
     }
 
     /**
