@@ -697,6 +697,35 @@ class OkeServiceTest {
     }
 
     @Test
+    void restoreRecreatesTheAgentsOfStoredNodePoolsOnceTheServerAnswers() {
+        OkeService service = realModeService();
+        String clusterId = activeRealCluster(service, "restored");
+        StoredOkeCluster cluster = service.getCluster(clusterId);
+        cluster.setCaCertificate("Q0FEQVRB");
+        StoredNodePool legacy = new StoredNodePool();
+        legacy.setId("ocid1.nodepool.oc1.iad.legacy");
+        legacy.setClusterId(clusterId);
+        legacy.setCompartmentId(COMPARTMENT);
+        legacy.setName("legacy");
+        legacy.setNodeShape("VM.Standard2.1");
+        legacy.setKubernetesVersion(OkeVersions.DEFAULT_VERSION);
+        legacy.setLifecycleState("ACTIVE");
+        legacy.setNodeConfigDetails(new java.util.LinkedHashMap<>(Map.of("size", 1, "placementConfigs", List.of(
+                Map.of("availabilityDomain", "Floc:US-ASHBURN-AD-1", "subnetId", "ocid1.subnet.oc1.iad.workers")))));
+        nodePools.put(legacy.getId(), legacy);
+        service.updateNodePool(legacy.getId(), null, null, null);
+        when(readinessManager.nodeReadiness(any())).thenReturn(Optional.of(Map.of()));
+        org.mockito.Mockito.clearInvocations(readinessManager);
+
+        service.reconstructClusterState();
+        service.pollReadiness();
+
+        verify(readinessManager).registerExistingCluster(argThat(c -> c.getId().equals(clusterId)));
+        verify(readinessManager, atLeastOnce()).ensureNode(any(), argThat(p -> p.getId().equals(legacy.getId())), any());
+        assertEquals(TENANCY, service.getNodePool(legacy.getId()).getTenancyId(), "pools stored before get their tenancy");
+    }
+
+    @Test
     void anEmptyRealNodePoolIsActiveAtOnce() {
         OkeService service = realModeService();
         String clusterId = activeRealCluster(service, "empty");
