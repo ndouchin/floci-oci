@@ -148,7 +148,7 @@ resource "oci_containerengine_cluster" "tf_cluster" {
   compartment_id     = var.tenancy_ocid
   name               = "tf-compat-cluster"
   vcn_id             = "ocid1.vcn.oc1.iad.tfvcn"
-  kubernetes_version = "v1.30.1"
+  kubernetes_version = "v1.36.4"
   type               = "ENHANCED_CLUSTER"
 
   endpoint_config {
@@ -192,7 +192,7 @@ resource "oci_containerengine_node_pool" "tf_node_pool" {
   cluster_id         = oci_containerengine_cluster.tf_cluster.id
   compartment_id     = var.tenancy_ocid
   name               = "tf-compat-nodepool"
-  kubernetes_version = "v1.30.1"
+  kubernetes_version = "v1.36.4"
   node_shape         = "VM.Standard.E4.Flex"
 }
 

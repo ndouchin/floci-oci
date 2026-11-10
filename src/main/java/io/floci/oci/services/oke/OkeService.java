@@ -60,8 +60,11 @@ public class OkeService implements Resettable, CompartmentUsage {
             "kubernetes", "https://127.0.0.1:6443",
             "privateEndpoint", "10.0.0.10:6443");
 
-    /** A real-mode cluster still CREATING, with the tenancy that owns it and when it started. */
-    record PendingCluster(String tenancyId, Instant since) {}
+    /**
+     * A real-mode cluster still CREATING or UPDATING, with the tenancy that owns it, when its k3s
+     * server started and the work request that finishes with it.
+     */
+    record PendingCluster(String tenancyId, Instant since, String workRequestId) {}
 
     /** A stored cluster together with the tenancy whose partition it lives in. */
     private record OwnedCluster(String tenancyId, StoredOkeCluster cluster) {}
@@ -176,7 +179,8 @@ public class OkeService implements Resettable, CompartmentUsage {
                 // Shutdown removed the volume holding the k3s CA, so the new sidecar has a new one.
                 cluster.setCaCertificate(null);
                 cluster.setLifecycleState("CREATING");
-                pendingClusters.put(cluster.getId(), new PendingCluster(owned.tenancyId(), clock.instant()));
+                pendingClusters.put(cluster.getId(), new PendingCluster(owned.tenancyId(), clock.instant(),
+                        cluster.getCreateWorkRequestId()));
             }
             putCluster(owned.tenancyId(), cluster);
         }
@@ -258,8 +262,8 @@ public class OkeService implements Resettable, CompartmentUsage {
             String clusterId = entry.getKey();
             PendingCluster pending = entry.getValue();
             Optional<StoredOkeCluster> found = findCluster(pending.tenancyId(), clusterId);
-            if (found.isEmpty() || !"CREATING".equals(found.get().getLifecycleState())) {
-                LOG.debugv("OKE cluster {0} is no longer CREATING in tenancy {1}; stop polling it",
+            if (found.isEmpty() || !isStarting(found.get())) {
+                LOG.debugv("OKE cluster {0} is no longer CREATING or UPDATING in tenancy {1}; stop polling it",
                         clusterId, pending.tenancyId());
                 pendingClusters.remove(clusterId);
                 continue;
@@ -272,17 +276,21 @@ public class OkeService implements Resettable, CompartmentUsage {
         }
     }
 
+    private static boolean isStarting(StoredOkeCluster cluster) {
+        return "CREATING".equals(cluster.getLifecycleState()) || "UPDATING".equals(cluster.getLifecycleState());
+    }
+
     private void pollOne(PendingCluster pending, StoredOkeCluster cluster) {
         Optional<String> caCertificate = clusterManager.probeReady(cluster);
         if (caCertificate.isPresent()) {
             cluster.setCaCertificate(caCertificate.get());
-            finishCreate(pending.tenancyId(), cluster, "ACTIVE", "SUCCEEDED", null);
+            finishCreate(pending, cluster, "ACTIVE", "SUCCEEDED", null);
         } else if (!clusterManager.isClusterRunning(cluster)) {
-            finishCreate(pending.tenancyId(), cluster, "FAILED", "FAILED",
+            finishCreate(pending, cluster, "FAILED", "FAILED",
                     "The k3s sidecar exited before its API server became ready");
         } else if (clock.instant().isAfter(
                 pending.since().plusSeconds(config.services().oke().readyTimeoutSeconds()))) {
-            finishCreate(pending.tenancyId(), cluster, "FAILED", "FAILED",
+            finishCreate(pending, cluster, "FAILED", "FAILED",
                     "The k3s API server was not ready after "
                             + config.services().oke().readyTimeoutSeconds() + " seconds");
         }
@@ -293,20 +301,21 @@ public class OkeService implements Resettable, CompartmentUsage {
      * from {@link #pendingClusters}: a delete or reset that removed it during the probe wins, so
      * the poller never writes back a cluster that is gone.
      */
-    private void finishCreate(String owner, StoredOkeCluster cluster, String lifecycleState,
+    private void finishCreate(PendingCluster started, StoredOkeCluster cluster, String lifecycleState,
                               String workRequestStatus, String details) {
+        String owner = started.tenancyId();
         AtomicBoolean recorded = new AtomicBoolean();
         pendingClusters.computeIfPresent(cluster.getId(), (id, pending) -> {
             cluster.setLifecycleState(lifecycleState);
             cluster.setLifecycleDetails(details);
             putCluster(owner, cluster);
-            if (cluster.getCreateWorkRequestId() != null) {
+            if (pending.workRequestId() != null) {
                 // Terraform builds its failure message from the work request's errors.
                 List<StoredWorkRequest.ErrorEntry> errors = "FAILED".equals(workRequestStatus) && details != null
                         ? List.of(new StoredWorkRequest.ErrorEntry("InternalServerError", details))
                         : List.of();
                 workRequests.finish(owner, cluster.getRegion(),
-                        cluster.getCreateWorkRequestId(), workRequestStatus, errors);
+                        pending.workRequestId(), workRequestStatus, errors);
             }
             recorded.set(true);
             return null;
@@ -399,6 +408,7 @@ public class OkeService implements Resettable, CompartmentUsage {
         if (vcnId == null || vcnId.isBlank()) {
             throw OciException.missingParameter("Missing required parameter: vcnId");
         }
+        String version = OkeVersions.requireForNewCluster(kubernetesVersion);
         String type = OkeClusterSettings.type(settings.type());
         Map<String, Object> endpointConfig = OkeClusterSettings.endpointConfig(settings.endpointConfig());
         Map<String, Object> options = OkeClusterSettings.createOptions(settings.options());
@@ -412,7 +422,7 @@ public class OkeService implements Resettable, CompartmentUsage {
         cluster.setName(name);
         cluster.setCompartmentId(compartmentId);
         cluster.setVcnId(vcnId);
-        cluster.setKubernetesVersion(kubernetesVersion != null ? kubernetesVersion : "v1.30.1");
+        cluster.setKubernetesVersion(version);
         cluster.setKmsKeyId(kmsKeyId);
         cluster.setLifecycleState("CREATING");
         cluster.setLifecycleDetails(null);
@@ -449,7 +459,7 @@ public class OkeService implements Resettable, CompartmentUsage {
         clusters.put(clusterId, cluster);
         if (creating) {
             // Only once stored: the poller drops a pending entry whose cluster it cannot find.
-            pendingClusters.put(clusterId, new PendingCluster(cluster.getTenancyId(), clock.instant()));
+            pendingClusters.put(clusterId, new PendingCluster(cluster.getTenancyId(), clock.instant(), workRequestId));
         }
         return new CreateClusterResult(workRequestId, cluster);
     }
@@ -500,10 +510,17 @@ public class OkeService implements Resettable, CompartmentUsage {
         String type = OkeClusterSettings.type(settings.type());
         Map<String, Object> imagePolicyConfig = OkeClusterSettings.imagePolicyConfig(settings.imagePolicyConfig());
         Map<String, Object> options = OkeClusterSettings.updatedOptions(cluster.getOptions(), settings.options());
+        boolean upgrade = kubernetesVersion != null && !kubernetesVersion.isBlank()
+                && !kubernetesVersion.equals(cluster.getKubernetesVersion());
+        if (upgrade) {
+            requireActive(cluster, "upgraded");
+            OkeVersions.requireClusterUpgrade(cluster.getKubernetesVersion(), kubernetesVersion,
+                    nodeVersions(clusterId));
+        }
         if (name != null && !name.isBlank()) {
             cluster.setName(name);
         }
-        if (kubernetesVersion != null && !kubernetesVersion.isBlank()) {
+        if (upgrade) {
             cluster.setKubernetesVersion(kubernetesVersion);
         }
         if (freeformTags != null) {
@@ -519,7 +536,57 @@ public class OkeService implements Resettable, CompartmentUsage {
             cluster.setImagePolicyConfig(imagePolicyConfig);
         }
         cluster.setOptions(options);
+        if (upgrade && realMode()) {
+            return upgradeControlPlane(cluster);
+        }
         return clusterUpdated(cluster);
+    }
+
+    /**
+     * Recreates the k3s server on the new version's image, on the same volume, so the cluster keeps
+     * its data, CA and agents. The cluster is UPDATING with an IN_PROGRESS CLUSTER_UPDATE work
+     * request until the new server answers, as on create.
+     */
+    private String upgradeControlPlane(StoredOkeCluster cluster) {
+        cluster.setEtag(Etags.newEtag());
+        cluster.setLifecycleState("UPDATING");
+        StoredWorkRequest.Resource res = WorkRequestService.resource(
+            "cluster", "UPDATED", cluster.getId(), "/20180222/clusters/" + cluster.getId()
+        );
+        String workRequestId = workRequests.inProgress("oke", "CLUSTER_UPDATE", cluster.getCompartmentId(),
+                List.of(res));
+        clusters.put(cluster.getId(), cluster);
+        PendingCluster pending = new PendingCluster(cluster.getTenancyId(), clock.instant(), workRequestId);
+        pendingClusters.put(cluster.getId(), pending);
+        try {
+            clusterManager.restartCluster(cluster);
+        } catch (RuntimeException e) {
+            finishCreate(pending, cluster, "FAILED", "FAILED", "The k3s server did not start on "
+                    + cluster.getKubernetesVersion() + ": " + e.getMessage());
+        }
+        return workRequestId;
+    }
+
+    /** OCI does not say what an operation on a cluster that is not ACTIVE gets; same rule as node pools. */
+    private static void requireActive(StoredOkeCluster cluster, String action) {
+        String state = cluster.getLifecycleState();
+        if ("CREATING".equals(state) || "UPDATING".equals(state)) {
+            throw new OciException("IncorrectState", "Cluster " + cluster.getId() + " is " + state
+                    + " and cannot be " + action + " until it is ACTIVE", 409);
+        }
+        if (!"ACTIVE".equals(state)) {
+            throw OciException.conflict("Cluster " + cluster.getId() + " is " + state + " and cannot be " + action);
+        }
+    }
+
+    /** The versions configured on the cluster's node pools and running on their nodes. */
+    private List<String> nodeVersions(String clusterId) {
+        List<String> versions = new ArrayList<>();
+        for (StoredNodePool pool : listNodePools(null, clusterId)) {
+            versions.add(pool.getKubernetesVersion());
+            pool.getNodes().forEach(node -> versions.add(node.getKubernetesVersion()));
+        }
+        return versions;
     }
 
     /** UpdateClusterEndpointConfig: NSGs, public IP and security attributes; the subnet stays. */
@@ -621,7 +688,10 @@ public class OkeService implements Resettable, CompartmentUsage {
         pool.setName(name);
         pool.setCompartmentId(compartmentId);
         pool.setClusterId(clusterId);
-        pool.setKubernetesVersion(kubernetesVersion != null ? kubernetesVersion : cluster.getKubernetesVersion());
+        String poolVersion = kubernetesVersion != null && !kubernetesVersion.isBlank()
+                ? kubernetesVersion : cluster.getKubernetesVersion();
+        OkeVersions.requireNodePoolVersion(cluster.getKubernetesVersion(), poolVersion);
+        pool.setKubernetesVersion(poolVersion);
         pool.setNodeShape(nodeShape != null ? nodeShape : "VM.Standard.E4.Flex");
         pool.setQuantityPerSubnet(quantityPerSubnet != null ? quantityPerSubnet : 1);
         pool.setSubnetIds(settings.subnetIds());
@@ -715,6 +785,11 @@ public class OkeService implements Resettable, CompartmentUsage {
         if (quantityPerSubnet != null && quantityPerSubnet < 0) {
             throw OciException.invalidParameter("quantityPerSubnet must not be negative");
         }
+        StoredOkeCluster cluster = getCluster(pool.getClusterId());
+        if (kubernetesVersion != null && !kubernetesVersion.isBlank()
+                && !kubernetesVersion.equals(pool.getKubernetesVersion())) {
+            OkeVersions.requireNodePoolVersion(cluster.getKubernetesVersion(), kubernetesVersion);
+        }
         if (name != null && !name.isBlank()) {
             pool.setName(name);
         }
@@ -763,7 +838,7 @@ public class OkeService implements Resettable, CompartmentUsage {
         if (definedTags != null) {
             pool.setDefinedTags(definedTags);
         }
-        resizeNodes(getCluster(pool.getClusterId()), pool);
+        resizeNodes(cluster, pool);
         nodePools.put(nodePoolId, pool);
 
         StoredWorkRequest.Resource res = WorkRequestService.resource(

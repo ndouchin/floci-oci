@@ -75,7 +75,9 @@ class OkeClusterManagerTest {
         lenient().when(config.services().oke().mock()).thenReturn(false);
         lenient().when(config.services().oke().apiServerBasePort()).thenReturn(6443);
         lenient().when(config.services().oke().apiServerMaxPort()).thenReturn(6543);
-        lenient().when(config.services().oke().defaultImage()).thenReturn("rancher/k3s:v1.30.1-k3s1");
+        lenient().when(config.services().oke().imageRepository()).thenReturn("rancher/k3s");
+        lenient().when(containerBuilder.resolveImage(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        lenient().when(lifecycleManager.containerImage(anyString())).thenReturn("rancher/k3s:v1.30.1-k3s1");
         lenient().when(config.storage().mode()).thenReturn("memory");
         lenient().when(config.storage().pruneVolumesOnDelete()).thenReturn(true);
         lenient().when(config.defaultRegion()).thenReturn("us-ashburn-1");
@@ -500,6 +502,20 @@ class OkeClusterManagerTest {
         manager.startCluster(cluster);
 
         verify(lifecycleManager, never()).createAndStart(any());
+    }
+
+    @Test
+    void startClusterRecreatesARunningSidecarOnAnotherVersionsImage() {
+        StoredOkeCluster cluster = adoptableCluster("ocid1.cluster.oc1.iad.adopt004");
+        cluster.setKubernetesVersion("v1.36.4");
+        when(lifecycleManager.isContainerRunning(anyString())).thenReturn(true);
+        when(lifecycleManager.containerImage(anyString())).thenReturn("rancher/k3s:v1.35.2-k3s1");
+        when(lifecycleManager.createAndStart(any())).thenReturn(new ContainerLifecycleManager.ContainerInfo("c-new", Map.of()));
+
+        manager.startCluster(cluster);
+
+        verify(containerBuilder).newContainer("rancher/k3s:v1.36.4-k3s1");
+        verify(lifecycleManager).createAndStart(any());
     }
 
     @Test

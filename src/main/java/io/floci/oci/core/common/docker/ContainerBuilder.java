@@ -66,7 +66,8 @@ public class ContainerBuilder {
         return new Builder(resolveImage(image), config, dockerHostResolver, embeddedDnsServer, currentContainerNetworkResolver);
     }
 
-    private String resolveImage(String image) {
+    /** The image name {@link #newContainer} creates the container from, with the registry base applied. */
+    public String resolveImage(String image) {
         return resolveImage(image, configuredImageRegistryBase(config));
     }
 

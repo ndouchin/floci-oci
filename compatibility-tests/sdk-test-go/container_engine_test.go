@@ -70,7 +70,7 @@ func TestOkeClusterLifecycle(t *testing.T) {
 	compartmentId := "ocid1.tenancy.oc1..test"
 	name := "go-sdk-cluster"
 	vcnId := "ocid1.vcn.oc1.iad.testvcn"
-	version := "v1.30.1"
+	version := "v1.36.4"
 
 	// 1. Create Cluster
 	createResp, err := client.CreateCluster(ctx, containerengine.CreateClusterRequest{

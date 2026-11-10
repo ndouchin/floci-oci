@@ -366,7 +366,7 @@ func main() {
 			CompartmentId:     common.String("ocid1.tenancy.oc1..flocilocaltenancy0000000000000000000000000000000000000000"),
 			Name:              common.String("go-demo-cluster"),
 			VcnId:             common.String("ocid1.vcn.oc1.iad.demovcn"),
-			KubernetesVersion: common.String("v1.30.1"),
+			KubernetesVersion: common.String("v1.36.4"),
 		},
 	})
 	if err != nil {

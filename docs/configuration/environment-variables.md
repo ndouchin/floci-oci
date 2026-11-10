@@ -32,7 +32,8 @@ All configuration lives under the `floci-oci.*` prefix; every property maps to a
 | `FLOCI_OCI_SERVICES_FUNCTIONS_SERVER_IMAGE` | `fnproject/fnserver:latest` | Fn Project server image |
 | `FLOCI_OCI_SERVICES_OKE_ENABLED` | `true` | Enable/disable Container Engine for Kubernetes (OKE) |
 | `FLOCI_OCI_SERVICES_OKE_MOCK` | `false` | Skip the k3s sidecar; clusters become `ACTIVE` at once with synthetic endpoints |
-| `FLOCI_OCI_SERVICES_OKE_DEFAULT_IMAGE` | `rancher/k3s:v1.30.1-k3s1` | k3s image for cluster sidecars |
+| `FLOCI_OCI_SERVICES_OKE_IMAGE_REPOSITORY` | `rancher/k3s` | Repository of the k3s images; each Kubernetes version runs on `<repository>:v<version>-k3s1` |
+| `FLOCI_OCI_SERVICES_OKE_MAX_NODES_PER_CLUSTER` | `5` | Most k3s agent containers (worker nodes) per cluster; nodes past it exist in the API only |
 | `FLOCI_OCI_SERVICES_OKE_API_SERVER_BASE_PORT` | `6443` | First host port for cluster API servers |
 | `FLOCI_OCI_SERVICES_OKE_API_SERVER_MAX_PORT` | `6543` | Last host port for cluster API servers |
 | `FLOCI_OCI_SERVICES_OKE_KUBECONFIG_AUTH` | `exec` | Kubeconfig user: `exec` (real OKE `oci ce cluster generate-token`) or `token` (static bearer token). Any other value stops startup while OKE is enabled |

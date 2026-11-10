@@ -36,9 +36,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class OkeServiceTest {
@@ -65,7 +67,7 @@ class OkeServiceTest {
 
     @Test
     void createAndGetCluster() {
-        OkeService.CreateClusterResult res = service.createCluster(COMPARTMENT, "my-cluster", VCN, "v1.30.1", null, Map.of("env", "test"), null);
+        OkeService.CreateClusterResult res = service.createCluster(COMPARTMENT, "my-cluster", VCN, OkeVersions.DEFAULT_VERSION, null, Map.of("env", "test"), null);
         assertNotNull(res.cluster());
         assertNotNull(clusters);
         List<StoredOkeCluster> list = service.listClusters(COMPARTMENT);
@@ -80,14 +82,14 @@ class OkeServiceTest {
 
     @Test
     void ocidUsesMappedRegionShortCode() {
-        OkeService.CreateClusterResult res = service.createCluster(COMPARTMENT, "region-cluster", VCN, "v1.30.1", null, null, null);
+        OkeService.CreateClusterResult res = service.createCluster(COMPARTMENT, "region-cluster", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         assertTrue(res.cluster().getId().startsWith("ocid1.cluster.oc1.iad."));
     }
 
     @Test
     void createClusterWithDuplicateNameReturnsNewCluster() {
-        OkeService.CreateClusterResult res1 = service.createCluster(COMPARTMENT, "same-name", VCN, "v1.30.1", null, null, null);
-        OkeService.CreateClusterResult res2 = service.createCluster(COMPARTMENT, "same-name", VCN, "v1.30.1", null, null, null);
+        OkeService.CreateClusterResult res1 = service.createCluster(COMPARTMENT, "same-name", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
+        OkeService.CreateClusterResult res2 = service.createCluster(COMPARTMENT, "same-name", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
 
         assertNotNull(res1.cluster().getId());
         assertNotNull(res2.cluster().getId());
@@ -96,11 +98,11 @@ class OkeServiceTest {
 
     @Test
     void createNodePoolWithDuplicateNameReturnsNewNodePool() {
-        OkeService.CreateClusterResult cRes = service.createCluster(COMPARTMENT, "cluster-dup", VCN, "v1.30.1", null, null, null);
+        OkeService.CreateClusterResult cRes = service.createCluster(COMPARTMENT, "cluster-dup", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         String clusterId = cRes.cluster().getId();
 
-        OkeService.CreateNodePoolResult np1 = service.createNodePool(COMPARTMENT, clusterId, "pool-dup", "v1.30.1", "VM.Standard.E4.Flex", 2, null, null);
-        OkeService.CreateNodePoolResult np2 = service.createNodePool(COMPARTMENT, clusterId, "pool-dup", "v1.30.1", "VM.Standard.E4.Flex", 2, null, null);
+        OkeService.CreateNodePoolResult np1 = service.createNodePool(COMPARTMENT, clusterId, "pool-dup", OkeVersions.DEFAULT_VERSION, "VM.Standard.E4.Flex", 2, null, null);
+        OkeService.CreateNodePoolResult np2 = service.createNodePool(COMPARTMENT, clusterId, "pool-dup", OkeVersions.DEFAULT_VERSION, "VM.Standard.E4.Flex", 2, null, null);
 
         assertNotNull(np1.nodePool().getId());
         assertNotNull(np2.nodePool().getId());
@@ -115,7 +117,7 @@ class OkeServiceTest {
     @Test
     void createNodePoolNonexistentClusterThrowsOciException() {
         assertThrows(OciException.class, () ->
-            service.createNodePool(COMPARTMENT, "ocid1.cluster.oc1.iad.nonexistent", "pool-1", "v1.30.1", "VM.Standard.E4.Flex", 2, null, null)
+            service.createNodePool(COMPARTMENT, "ocid1.cluster.oc1.iad.nonexistent", "pool-1", OkeVersions.DEFAULT_VERSION, "VM.Standard.E4.Flex", 2, null, null)
         );
     }
 
@@ -132,7 +134,7 @@ class OkeServiceTest {
 
     @Test
     void createReadsBackTheSettingsAsSent() {
-        StoredOkeCluster cluster = service.createCluster(COMPARTMENT, "settings", VCN, "v1.30.1", null, null, null,
+        StoredOkeCluster cluster = service.createCluster(COMPARTMENT, "settings", VCN, OkeVersions.DEFAULT_VERSION, null, null, null,
                 fullSettings()).cluster();
 
         Map<String, Object> wire = service.getCluster(cluster.getId()).toWire();
@@ -153,7 +155,7 @@ class OkeServiceTest {
 
     @Test
     void unsetSettingsStayAbsent() {
-        StoredOkeCluster cluster = service.createCluster(COMPARTMENT, "bare", VCN, "v1.30.1", null, null, null)
+        StoredOkeCluster cluster = service.createCluster(COMPARTMENT, "bare", VCN, OkeVersions.DEFAULT_VERSION, null, null, null)
                 .cluster();
 
         Map<String, Object> wire = cluster.toWire();
@@ -166,21 +168,21 @@ class OkeServiceTest {
     @Test
     void createRejectsUnknownEnumValues() {
         assertEquals("InvalidParameter", assertThrows(OciException.class, () -> service.createCluster(COMPARTMENT,
-                "bad", VCN, "v1.30.1", null, null, null,
+                "bad", VCN, OkeVersions.DEFAULT_VERSION, null, null, null,
                 new OkeService.ClusterSettings("HUGE_CLUSTER", null, null, null, null))).getCode());
         assertEquals("InvalidParameter", assertThrows(OciException.class, () -> service.createCluster(COMPARTMENT,
-                "bad", VCN, "v1.30.1", null, null, null,
+                "bad", VCN, OkeVersions.DEFAULT_VERSION, null, null, null,
                 new OkeService.ClusterSettings(null, null, null, null, List.of(Map.of("cniType", "CALICO")))))
                 .getCode());
         assertEquals("InvalidParameter", assertThrows(OciException.class, () -> service.createCluster(COMPARTMENT,
-                "bad", VCN, "v1.30.1", null, null, null,
+                "bad", VCN, OkeVersions.DEFAULT_VERSION, null, null, null,
                 new OkeService.ClusterSettings(null, null, Map.of("ipFamilies", List.of("IPv5")), null, null)))
                 .getCode());
     }
 
     @Test
     void updateChangesOnlyWhatUpdateClusterDetailsAllows() {
-        StoredOkeCluster cluster = service.createCluster(COMPARTMENT, "upd", VCN, "v1.30.1", null, null, null,
+        StoredOkeCluster cluster = service.createCluster(COMPARTMENT, "upd", VCN, OkeVersions.DEFAULT_VERSION, null, null, null,
                 fullSettings()).cluster();
         String etag = cluster.getEtag();
 
@@ -204,7 +206,7 @@ class OkeServiceTest {
 
     @Test
     void aClusterStoredWithoutAnEtagGetsOneAtStartup() {
-        StoredOkeCluster cluster = service.createCluster(COMPARTMENT, "old", VCN, "v1.30.1", null, null, null).cluster();
+        StoredOkeCluster cluster = service.createCluster(COMPARTMENT, "old", VCN, OkeVersions.DEFAULT_VERSION, null, null, null).cluster();
         cluster.setEtag(null);
         clusters.put(cluster.getId(), cluster);
 
@@ -218,7 +220,7 @@ class OkeServiceTest {
 
     @Test
     void concurrentUpdatesWithTheSameEtagLetOnlyOneThrough() throws Exception {
-        StoredOkeCluster cluster = service.createCluster(COMPARTMENT, "race", VCN, "v1.30.1", null, null, null)
+        StoredOkeCluster cluster = service.createCluster(COMPARTMENT, "race", VCN, OkeVersions.DEFAULT_VERSION, null, null, null)
                 .cluster();
         String etag = cluster.getEtag();
         int writers = 8;
@@ -255,14 +257,14 @@ class OkeServiceTest {
 
     @Test
     void endpointConfigActionsKeepOrSetTheSubnet() {
-        StoredOkeCluster withConfig = service.createCluster(COMPARTMENT, "ep", VCN, "v1.30.1", null, null, null,
+        StoredOkeCluster withConfig = service.createCluster(COMPARTMENT, "ep", VCN, OkeVersions.DEFAULT_VERSION, null, null, null,
                 fullSettings()).cluster();
         service.updateClusterEndpointConfig(withConfig.getId(),
                 Map.of("isPublicIpEnabled", false, "subnetId", "ocid1.subnet.oc1.iad.other"), null);
         assertEquals(Map.of("subnetId", "ocid1.subnet.oc1.iad.api", "isPublicIpEnabled", false, "nsgIds", List.of()),
                 service.getCluster(withConfig.getId()).getEndpointConfig());
 
-        StoredOkeCluster bare = service.createCluster(COMPARTMENT, "ep2", VCN, "v1.30.1", null, null, null).cluster();
+        StoredOkeCluster bare = service.createCluster(COMPARTMENT, "ep2", VCN, OkeVersions.DEFAULT_VERSION, null, null, null).cluster();
         service.migrateClusterToNativeVcn(bare.getId(),
                 Map.of("endpointConfig", Map.of("subnetId", "ocid1.subnet.oc1.iad.api")), null);
         assertEquals(Map.of("subnetId", "ocid1.subnet.oc1.iad.api"), service.getCluster(bare.getId()).getEndpointConfig());
@@ -272,13 +274,13 @@ class OkeServiceTest {
 
     @Test
     void updateAndDeleteCluster() {
-        service.createCluster(COMPARTMENT, "cluster-1", VCN, "v1.29.1", null, null, null);
+        service.createCluster(COMPARTMENT, "cluster-1", VCN, "v1.35.2", null, null, null);
         StoredOkeCluster cluster = service.listClusters(COMPARTMENT).get(0);
 
-        service.updateCluster(cluster.getId(), "updated-name", "v1.30.1");
+        service.updateCluster(cluster.getId(), "updated-name", OkeVersions.DEFAULT_VERSION);
         StoredOkeCluster updated = service.getCluster(cluster.getId());
         assertEquals("updated-name", updated.getName());
-        assertEquals("v1.30.1", updated.getKubernetesVersion());
+        assertEquals(OkeVersions.DEFAULT_VERSION, updated.getKubernetesVersion());
 
         service.deleteCluster(cluster.getId());
         assertThrows(OciException.class, () -> service.getCluster(cluster.getId()));
@@ -286,10 +288,10 @@ class OkeServiceTest {
 
     @Test
     void deleteClusterDeletesDependentNodePools() {
-        OkeService.CreateClusterResult cRes = service.createCluster(COMPARTMENT, "cluster-cascade", VCN, "v1.30.1", null, null, null);
+        OkeService.CreateClusterResult cRes = service.createCluster(COMPARTMENT, "cluster-cascade", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         String clusterId = cRes.cluster().getId();
 
-        OkeService.CreateNodePoolResult npRes = service.createNodePool(COMPARTMENT, clusterId, "pool-cascade", "v1.30.1", "VM.Standard.E4.Flex", 2, null, null);
+        OkeService.CreateNodePoolResult npRes = service.createNodePool(COMPARTMENT, clusterId, "pool-cascade", OkeVersions.DEFAULT_VERSION, "VM.Standard.E4.Flex", 2, null, null);
         String poolId = npRes.nodePool().getId();
 
         service.deleteCluster(clusterId);
@@ -301,10 +303,10 @@ class OkeServiceTest {
 
     @Test
     void createAndListNodePools() {
-        service.createCluster(COMPARTMENT, "cluster-1", VCN, "v1.30.1", null, null, null);
+        service.createCluster(COMPARTMENT, "cluster-1", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         StoredOkeCluster cluster = service.listClusters(COMPARTMENT).get(0);
 
-        service.createNodePool(COMPARTMENT, cluster.getId(), "pool-1", "v1.30.1", "VM.Standard.E4.Flex", 2, null, null);
+        service.createNodePool(COMPARTMENT, cluster.getId(), "pool-1", OkeVersions.DEFAULT_VERSION, "VM.Standard.E4.Flex", 2, null, null);
         List<StoredNodePool> pools = service.listNodePools(COMPARTMENT, cluster.getId());
         assertEquals(1, pools.size());
         StoredNodePool pool = pools.get(0);
@@ -315,7 +317,7 @@ class OkeServiceTest {
 
     @Test
     void clearPurgesStorage() {
-        service.createCluster(COMPARTMENT, "cluster-1", VCN, "v1.30.1", null, null, null);
+        service.createCluster(COMPARTMENT, "cluster-1", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         service.clear();
         assertTrue(service.listClusters(COMPARTMENT).isEmpty());
     }
@@ -390,8 +392,8 @@ class OkeServiceTest {
 
     @Test
     void createClusterAssignsDistinctApiTokensKeptOffTheWire() {
-        StoredOkeCluster first = service.createCluster(COMPARTMENT, "first", VCN, null, null, null, null).cluster();
-        StoredOkeCluster second = service.createCluster(COMPARTMENT, "second", VCN, null, null, null, null).cluster();
+        StoredOkeCluster first = service.createCluster(COMPARTMENT, "first", VCN, OkeVersions.DEFAULT_VERSION, null, null, null).cluster();
+        StoredOkeCluster second = service.createCluster(COMPARTMENT, "second", VCN, OkeVersions.DEFAULT_VERSION, null, null, null).cluster();
 
         assertNotNull(first.getApiToken());
         assertEquals(43, first.getApiToken().length(), "32 random bytes, base64url without padding");
@@ -480,7 +482,7 @@ class OkeServiceTest {
     void realModeCreateStaysCreatingWithAnInProgressWorkRequestNamingTheCluster() {
         OkeService service = realModeService();
 
-        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "pending", VCN, null, null, null, null);
+        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "pending", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
 
         StoredOkeCluster cluster = result.cluster();
         assertEquals("CREATING", cluster.getLifecycleState());
@@ -499,7 +501,7 @@ class OkeServiceTest {
     @Test
     void pollReadinessActivatesTheClusterAndFinishesTheWorkRequest() {
         OkeService service = realModeService();
-        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "ready", VCN, null, null, null, null);
+        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "ready", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         when(readinessManager.probeReady(any())).thenReturn(Optional.of("Q0FEQVRB"));
 
         service.pollReadiness();
@@ -517,7 +519,7 @@ class OkeServiceTest {
     @Test
     void pollReadinessKeepsWaitingWhileTheSidecarRunsWithinTheTimeout() {
         OkeService service = realModeService();
-        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "booting", VCN, null, null, null, null);
+        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "booting", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         when(readinessManager.probeReady(any())).thenReturn(Optional.empty());
         when(readinessManager.isClusterRunning(any())).thenReturn(true);
         clock.advanceSeconds(299);
@@ -531,7 +533,7 @@ class OkeServiceTest {
     @Test
     void pollReadinessDoesNotResurrectAClusterDeletedDuringTheProbe() {
         OkeService service = realModeService();
-        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "doomed", VCN, null, null, null, null);
+        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "doomed", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         String clusterId = result.cluster().getId();
         when(readinessManager.probeReady(any())).thenAnswer(invocation -> {
             service.deleteCluster(clusterId);
@@ -548,7 +550,7 @@ class OkeServiceTest {
     @Test
     void pollReadinessFailsTheClusterWhenTheSidecarExits() {
         OkeService service = realModeService();
-        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "crashed", VCN, null, null, null, null);
+        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "crashed", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         when(readinessManager.probeReady(any())).thenReturn(Optional.empty());
         when(readinessManager.isClusterRunning(any())).thenReturn(false);
 
@@ -568,7 +570,7 @@ class OkeServiceTest {
     @Test
     void aSucceededCreateHasNoWorkRequestErrors() {
         OkeService service = realModeService();
-        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "fine", VCN, null, null, null, null);
+        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "fine", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         when(readinessManager.probeReady(any())).thenReturn(Optional.of("Q0FEQVRB"));
 
         service.pollReadiness();
@@ -577,12 +579,42 @@ class OkeServiceTest {
     }
 
     @Test
+    void anUpgradeRecreatesTheServerAndStaysUpdatingUntilItAnswers() {
+        OkeService service = realModeService();
+        String clusterId = service.createCluster(COMPARTMENT, "upgrading", VCN, "v1.35.2", null, null, null)
+                .cluster().getId();
+        when(readinessManager.probeReady(any())).thenReturn(Optional.of("Q0FEQVRB"));
+        service.pollReadiness();
+
+        when(readinessManager.probeReady(any())).thenReturn(Optional.empty());
+        when(readinessManager.isClusterRunning(any())).thenReturn(true);
+        String workRequestId = service.updateCluster(clusterId, null, "v1.36.4", null, null,
+                OkeService.ClusterSettings.NONE, null);
+
+        verify(readinessManager).restartCluster(argThat(c -> "v1.36.4".equals(c.getKubernetesVersion())));
+        assertEquals("UPDATING", service.getCluster(clusterId).getLifecycleState());
+        assertEquals("CLUSTER_UPDATE", realWorkRequests.get(workRequestId).getOperationType());
+        assertEquals("IN_PROGRESS", realWorkRequests.get(workRequestId).getStatus());
+        OciException busy = assertThrows(OciException.class, () -> service.updateCluster(clusterId, null, "v1.37.0",
+                null, null, OkeService.ClusterSettings.NONE, null));
+        assertEquals("IncorrectState", busy.getCode());
+
+        service.pollReadiness();
+        assertEquals("UPDATING", service.getCluster(clusterId).getLifecycleState());
+        when(readinessManager.probeReady(any())).thenReturn(Optional.of("Q0FEQVRB"));
+        service.pollReadiness();
+
+        assertEquals("ACTIVE", service.getCluster(clusterId).getLifecycleState());
+        assertEquals("SUCCEEDED", realWorkRequests.get(workRequestId).getStatus());
+    }
+
+    @Test
     void aNodePoolNeedsAnActiveCluster() {
         OkeService service = realModeService();
-        String creating = service.createCluster(COMPARTMENT, "creating", VCN, null, null, null, null).cluster().getId();
+        String creating = service.createCluster(COMPARTMENT, "creating", VCN, OkeVersions.DEFAULT_VERSION, null, null, null).cluster().getId();
 
         OciException notYet = assertThrows(OciException.class, () -> service.createNodePool(COMPARTMENT, creating,
-                "early", "v1.30.1", "VM.Standard.E4.Flex", 1, null, null));
+                "early", OkeVersions.DEFAULT_VERSION, "VM.Standard.E4.Flex", 1, null, null));
         assertEquals(409, notYet.getHttpStatus());
         assertEquals("IncorrectState", notYet.getCode(), "retryable: the cluster may still become ACTIVE");
 
@@ -590,21 +622,21 @@ class OkeServiceTest {
         when(readinessManager.isClusterRunning(any())).thenReturn(false);
         service.pollReadiness();
         OciException never = assertThrows(OciException.class, () -> service.createNodePool(COMPARTMENT, creating,
-                "late", "v1.30.1", "VM.Standard.E4.Flex", 1, null, null));
+                "late", OkeVersions.DEFAULT_VERSION, "VM.Standard.E4.Flex", 1, null, null));
         assertEquals(409, never.getHttpStatus());
         assertEquals("Conflict", never.getCode(), "not retryable: a FAILED cluster stays FAILED");
 
-        String active = service.createCluster(COMPARTMENT, "active", VCN, null, null, null, null).cluster().getId();
+        String active = service.createCluster(COMPARTMENT, "active", VCN, OkeVersions.DEFAULT_VERSION, null, null, null).cluster().getId();
         when(readinessManager.probeReady(any())).thenReturn(Optional.of("Q0FEQVRB"));
         service.pollReadiness();
-        assertEquals("ACTIVE", service.createNodePool(COMPARTMENT, active, "pool", "v1.30.1", "VM.Standard.E4.Flex",
+        assertEquals("ACTIVE", service.createNodePool(COMPARTMENT, active, "pool", OkeVersions.DEFAULT_VERSION, "VM.Standard.E4.Flex",
                 1, null, null).nodePool().getLifecycleState());
     }
 
     @Test
     void pollReadinessFailsTheClusterAfterTheReadyTimeout() {
         OkeService service = realModeService();
-        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "slow", VCN, null, null, null, null);
+        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "slow", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         when(readinessManager.probeReady(any())).thenReturn(Optional.empty());
         when(readinessManager.isClusterRunning(any())).thenReturn(true);
         clock.advanceSeconds(301);
@@ -618,8 +650,8 @@ class OkeServiceTest {
     @Test
     void oneClusterFailingToProbeDoesNotStarveTheOthers() {
         OkeService service = realModeService();
-        StoredOkeCluster broken = service.createCluster(COMPARTMENT, "broken", VCN, null, null, null, null).cluster();
-        StoredOkeCluster healthy = service.createCluster(COMPARTMENT, "healthy", VCN, null, null, null, null).cluster();
+        StoredOkeCluster broken = service.createCluster(COMPARTMENT, "broken", VCN, OkeVersions.DEFAULT_VERSION, null, null, null).cluster();
+        StoredOkeCluster healthy = service.createCluster(COMPARTMENT, "healthy", VCN, OkeVersions.DEFAULT_VERSION, null, null, null).cluster();
         when(readinessManager.probeReady(any())).thenAnswer(invocation -> {
             StoredOkeCluster probed = invocation.getArgument(0);
             if (probed.getId().equals(broken.getId())) {
@@ -637,7 +669,7 @@ class OkeServiceTest {
     @Test
     void deletingACreatingClusterCancelsItsWorkRequest() {
         OkeService service = realModeService();
-        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "doomed", VCN, null, null, null, null);
+        OkeService.CreateClusterResult result = service.createCluster(COMPARTMENT, "doomed", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
 
         service.deleteCluster(result.cluster().getId());
         service.pollReadiness();

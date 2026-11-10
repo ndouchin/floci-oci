@@ -21,6 +21,7 @@ import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -34,6 +35,7 @@ import java.util.Map;
 @Consumes(MediaType.APPLICATION_JSON)
 public class OkeController {
 
+    private static final String ALL_OPTIONS = "all";
     static final List<String> KUBECONFIG_ENDPOINTS =
             List.of("LEGACY_KUBERNETES", "PUBLIC_ENDPOINT", "PRIVATE_ENDPOINT", "VCN_HOSTNAME");
 
@@ -81,7 +83,7 @@ public class OkeController {
     @Path("/clusters/{clusterId}")
     public Response getCluster(@PathParam("clusterId") String clusterId) {
         StoredOkeCluster cluster = service.getCluster(clusterId);
-        return Response.ok(cluster.toWire()).header("etag", cluster.getEtag()).build();
+        return Response.ok(clusterWire(cluster)).header("etag", cluster.getEtag()).build();
     }
 
     @GET
@@ -89,9 +91,16 @@ public class OkeController {
     public Response listClusters(@QueryParam("compartmentId") String compartmentId) {
         compartments.requireInQuery(compartmentId);
         List<Map<String, Object>> clusters = service.listClusters(compartmentId).stream()
-                .map(StoredOkeCluster::toWire)
+                .map(OkeController::clusterWire)
                 .toList();
         return Response.ok(clusters).build();
+    }
+
+    /** The cluster with the versions it can be upgraded to, which follow from its own version. */
+    private static Map<String, Object> clusterWire(StoredOkeCluster cluster) {
+        Map<String, Object> wire = cluster.toWire();
+        wire.put("availableKubernetesUpgrades", OkeVersions.availableUpgrades(cluster.getKubernetesVersion()));
+        return wire;
     }
 
     @PUT
@@ -222,22 +231,49 @@ public class OkeController {
 
     // ── Options ───────────────────────────────────────────────────────────────
 
+    /**
+     * {@code all} lists every version a new cluster can take; a cluster OCID lists that cluster's
+     * version and the ones it can be upgraded to.
+     */
     @GET
     @Path("/clusterOptions/{clusterOptionId}")
-    public Response getClusterOptions(@PathParam("clusterOptionId") String clusterOptionId) {
-        Map<String, Object> options = Map.of(
-            "kubernetesVersions", List.of("v1.30.1", "v1.29.1", "v1.28.2")
-        );
+    public Response getClusterOptions(@PathParam("clusterOptionId") String clusterOptionId,
+                                      @QueryParam("shouldListAllPatchVersions") Boolean allPatches) {
+        List<String> versions;
+        if (ALL_OPTIONS.equals(clusterOptionId)) {
+            versions = OkeVersions.advertised(Boolean.TRUE.equals(allPatches));
+        } else {
+            StoredOkeCluster cluster = service.getCluster(clusterOptionId);
+            versions = new ArrayList<>();
+            versions.add(cluster.getKubernetesVersion());
+            versions.addAll(OkeVersions.availableUpgrades(cluster.getKubernetesVersion()));
+        }
+        Map<String, Object> options = new LinkedHashMap<>();
+        options.put("kubernetesVersions", versions);
+        options.put("clusterPodNetworkOptions", OkeClusterSettings.CNI_TYPES.stream().sorted()
+                .map(cniType -> Map.of("cniType", cniType)).toList());
         return Response.ok(options).build();
     }
 
+    /**
+     * {@code all} lists every version a node pool can take; a cluster OCID lists the versions a node
+     * pool of that cluster can run: not newer than its control plane, within the skew policy.
+     */
     @GET
     @Path("/nodePoolOptions/{nodePoolOptionId}")
-    public Response getNodePoolOptions(@PathParam("nodePoolOptionId") String nodePoolOptionId) {
-        Map<String, Object> options = Map.of(
-            "shapes", List.of("VM.Standard.E4.Flex", "VM.Standard2.1", "VM.Standard3.Flex"),
-            "kubernetesVersions", List.of("v1.30.1", "v1.29.1", "v1.28.2")
-        );
+    public Response getNodePoolOptions(@PathParam("nodePoolOptionId") String nodePoolOptionId,
+                                       @QueryParam("shouldListAllPatchVersions") Boolean allPatches) {
+        List<String> versions = OkeVersions.advertised(Boolean.TRUE.equals(allPatches));
+        if (!ALL_OPTIONS.equals(nodePoolOptionId)) {
+            String clusterVersion = service.getCluster(nodePoolOptionId).getKubernetesVersion();
+            versions = versions.stream()
+                    .filter(version -> OkeVersions.compare(version, clusterVersion) <= 0
+                            && OkeVersions.minor(clusterVersion) - OkeVersions.minor(version) <= OkeVersions.MAX_NODE_SKEW)
+                    .toList();
+        }
+        Map<String, Object> options = new LinkedHashMap<>();
+        options.put("kubernetesVersions", versions);
+        options.put("shapes", List.of("VM.Standard.E4.Flex", "VM.Standard2.1", "VM.Standard3.Flex"));
         return Response.ok(options).build();
     }
 

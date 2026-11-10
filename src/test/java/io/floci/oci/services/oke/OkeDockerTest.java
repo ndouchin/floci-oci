@@ -114,7 +114,7 @@ class OkeDockerTest {
                 "compartmentId", compartment,
                 "name", "docker-oke-cluster",
                 "vcnId", VCN,
-                "kubernetesVersion", "v1.30.1"
+                "kubernetesVersion", "v1.35.2"
             ))
             .when().post("/20180222/clusters")
             .then()

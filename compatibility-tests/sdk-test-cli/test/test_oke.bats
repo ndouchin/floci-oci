@@ -23,7 +23,7 @@ teardown_file() {
 
 @test "ce: cluster create is accepted" {
     run oci_cmd ce cluster create --compartment-id "$TENANCY" --name "$CLUSTER_NAME" \
-        --vcn-id "ocid1.vcn.oc1.iad.clivcn" --kubernetes-version "v1.30.1"
+        --vcn-id "ocid1.vcn.oc1.iad.clivcn" --kubernetes-version "v1.36.4"
     [ "$status" -eq 0 ]
 }
 

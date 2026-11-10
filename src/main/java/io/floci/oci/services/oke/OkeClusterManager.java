@@ -149,7 +149,7 @@ public class OkeClusterManager implements Resettable {
                 // Created up front so it carries the floci labels; a mount alone creates it bare.
                 lifecycleManager.ensureVolume(volumeName);
 
-                ContainerSpec spec = containerBuilder.newContainer(config.services().oke().defaultImage())
+                ContainerSpec spec = containerBuilder.newContainer(serverImage(cluster))
                         .withName(containerName)
                         .withEntrypoint(K3S_ENTRYPOINT)
                         .withCmd(buildCmd())
@@ -256,7 +256,8 @@ public class OkeClusterManager implements Resettable {
      */
     private boolean createdForThisCluster(String containerName, StoredOkeCluster cluster) {
         List<String> env = lifecycleManager.containerEnv(containerName);
-        return env.contains(API_TOKEN_ENV + "=" + cluster.getApiToken())
+        return serverImage(cluster).equals(lifecycleManager.containerImage(containerName))
+                && env.contains(API_TOKEN_ENV + "=" + cluster.getApiToken())
                 && env.contains(WEBHOOK_KUBECONFIG_ENV + "=" + webhookKubeconfig(cluster))
                 && env.contains(TLS_SAN_ENV + "=" + containerName)
                 && clusterRegion(cluster).equals(
@@ -291,6 +292,21 @@ public class OkeClusterManager implements Resettable {
 
     static String webhookPath(StoredOkeCluster cluster) {
         return WEBHOOK_PATH_PREFIX + cluster.getTenancyId() + "/" + cluster.getId();
+    }
+
+    /** The k3s image of the cluster's Kubernetes version. */
+    String serverImage(StoredOkeCluster cluster) {
+        return containerBuilder.resolveImage(
+                OkeVersions.image(config.services().oke().imageRepository(), cluster.getKubernetesVersion()));
+    }
+
+    /**
+     * Replaces the k3s server with one on the cluster's current version, keeping its volume, host
+     * port and so its data and CA. Used by control plane upgrades.
+     */
+    public void restartCluster(StoredOkeCluster cluster) {
+        lifecycleManager.removeIfExists(containerName(cluster));
+        startCluster(cluster);
     }
 
     /** Whether the cluster's sidecar container is running. */

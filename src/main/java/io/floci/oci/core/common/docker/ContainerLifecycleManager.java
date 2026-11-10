@@ -486,6 +486,12 @@ public class ContainerLifecycleManager {
         return env != null ? List.of(env) : List.of();
     }
 
+    /** The image an existing container was created from, as named at creation. */
+    public String containerImage(String containerId) {
+        InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
+        return inspect.getConfig() != null ? inspect.getConfig().getImage() : null;
+    }
+
     /** The labels an existing container was created with. */
     public Map<String, String> containerLabels(String containerId) {
         InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
