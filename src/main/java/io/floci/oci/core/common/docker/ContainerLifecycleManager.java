@@ -14,8 +14,10 @@ import com.github.dockerjava.api.model.ContainerNetwork;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.Info;
 import com.github.dockerjava.api.model.Mount;
 import com.github.dockerjava.api.model.MountType;
+import com.github.dockerjava.api.model.Network;
 import com.github.dockerjava.api.model.Ports;
 import com.github.dockerjava.api.model.StreamType;
 import com.github.dockerjava.core.command.WaitContainerResultCallback;
@@ -128,6 +130,9 @@ public class ContainerLifecycleManager {
         if (spec.workingDir() != null && !spec.workingDir().isBlank()) {
             createCmd.withWorkingDir(spec.workingDir());
         }
+        if (spec.ipv4Address() != null && !spec.ipv4Address().isBlank()) {
+            createCmd.withIpv4Address(spec.ipv4Address());
+        }
         if (spec.exposedPorts() != null && !spec.exposedPorts().isEmpty()) {
             ExposedPort[] exposed = spec.exposedPorts().stream()
                     .map(ExposedPort::tcp)
@@ -152,7 +157,7 @@ public class ContainerLifecycleManager {
         dockerClient.startContainerCmd(containerId).exec();
         LOG.infov("Started container {0}", containerId);
 
-        if (spec.networkMode() != null && !spec.networkMode().isBlank() && spec.hasPortBindings()) {
+        if (connectsAfterStart(spec)) {
             try {
                 dockerClient.connectToNetworkCmd()
                         .withContainerId(containerId)
@@ -167,6 +172,17 @@ public class ContainerLifecycleManager {
 
         Map<Integer, EndpointInfo> endpoints = resolveEndpoints(containerId, spec);
         return new ContainerInfo(containerId, endpoints);
+    }
+
+    /**
+     * Whether {@link ContainerSpec#networkMode()} is joined after the start rather than at
+     * creation: when the container publishes ports, or is created on another (primary) network.
+     */
+    private static boolean connectsAfterStart(ContainerSpec spec) {
+        boolean hasPrimary = spec.primaryNetwork() != null && !spec.primaryNetwork().isBlank();
+        return spec.networkMode() != null && !spec.networkMode().isBlank()
+                && !spec.networkMode().equals(spec.primaryNetwork())
+                && (spec.hasPortBindings() || hasPrimary);
     }
 
     /**
@@ -486,6 +502,19 @@ public class ContainerLifecycleManager {
         return env != null ? List.of(env) : List.of();
     }
 
+    /** Every container, running or not, carrying the label {@code key=value}. */
+    public List<Container> listByLabel(String key, String value) {
+        try {
+            return dockerClient.listContainersCmd()
+                    .withShowAll(true)
+                    .withLabelFilter(Map.of(key, value))
+                    .exec();
+        } catch (Exception e) {
+            LOG.warnv("Could not list containers labelled {0}={1}: {2}", key, value, e.getMessage());
+            return List.of();
+        }
+    }
+
     /** The image an existing container was created from, as named at creation. */
     public String containerImage(String containerId) {
         InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
@@ -649,6 +678,79 @@ public class ContainerLifecycleManager {
     }
 
     /**
+     * Creates a bridge network with a fixed subnet unless one with that name exists. Addresses in
+     * {@code ipRange} are handed out by Docker; the rest of the subnet is for fixed addresses
+     * ({@link ContainerSpec#ipv4Address()}).
+     *
+     * @return the subnet of the network, which for an existing network may differ from {@code subnet}
+     * @throws DockerException when Docker refuses the network, for example because the subnet
+     *                         overlaps another network
+     */
+    public String ensureNetwork(String name, String subnet, String ipRange, Map<String, String> labels) {
+        Optional<String> existing = networkSubnet(name);
+        if (existing.isPresent()) {
+            return existing.get();
+        }
+        Map<String, String> networkLabels = ContainerStorageHelper.defaultLabels(config);
+        networkLabels.putAll(labels);
+        dockerClient.createNetworkCmd()
+                .withName(name)
+                .withDriver("bridge")
+                .withIpam(new Network.Ipam().withConfig(new Network.Ipam.Config()
+                        .withSubnet(subnet)
+                        .withIpRange(ipRange)))
+                .withLabels(ContainerStorageHelper.withLegacyAliases(networkLabels))
+                .exec();
+        LOG.infov("Created network {0} ({1})", name, subnet);
+        return subnet;
+    }
+
+    /** The IPv4 subnet of a network, empty when there is no network by that name. */
+    public Optional<String> networkSubnet(String name) {
+        try {
+            Network network = dockerClient.inspectNetworkCmd().withNetworkId(name).exec();
+            if (network.getIpam() == null || network.getIpam().getConfig() == null) {
+                return Optional.of("");
+            }
+            return network.getIpam().getConfig().stream()
+                    .map(Network.Ipam.Config::getSubnet)
+                    .filter(subnet -> subnet != null && subnet.contains("."))
+                    .findFirst()
+                    .or(() -> Optional.of(""));
+        } catch (NotFoundException e) {
+            return Optional.empty();
+        }
+    }
+
+    /** Removes a network, logging rather than failing when it is gone or still has containers. */
+    public void removeNetwork(String name) {
+        try {
+            dockerClient.removeNetworkCmd(name).exec();
+            LOG.infov("Removed network {0}", name);
+        } catch (NotFoundException e) {
+            LOG.debugv("Network {0} already gone", name);
+        } catch (Exception e) {
+            LOG.warnv("Could not remove network {0}: {1}", name, e.getMessage());
+        }
+    }
+
+    /** CPUs and memory of the Docker host, the totals a nested kubelet also sees. */
+    public record HostResources(int cpus, long memoryBytes) {}
+
+    public Optional<HostResources> hostResources() {
+        try {
+            Info info = dockerClient.infoCmd().exec();
+            if (info.getNCPU() == null || info.getMemTotal() == null) {
+                return Optional.empty();
+            }
+            return Optional.of(new HostResources(info.getNCPU(), info.getMemTotal()));
+        } catch (Exception e) {
+            LOG.warnv("Could not read the Docker host's CPUs and memory: {0}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
      * Returns the underlying DockerClient for operations not covered by this manager.
      * Prefer using manager methods when available.
      */
@@ -758,9 +860,16 @@ public class ContainerLifecycleManager {
         // Network mode: only set during creation when there are no host port bindings.
         // withNetworkMode() + port bindings suppresses port publishing on macOS Docker Desktop,
         // so containers with port bindings (e.g. ECR registry) connect to the network
-        // after start via connectToNetworkCmd() instead.
-        if (spec.networkMode() != null && !spec.networkMode().isBlank() && !spec.hasPortBindings()) {
+        // after start via connectToNetworkCmd() instead. A primary network is the exception the
+        // caller asks for explicitly.
+        if (spec.primaryNetwork() != null && !spec.primaryNetwork().isBlank()) {
+            hostConfig.withNetworkMode(spec.primaryNetwork());
+        } else if (spec.networkMode() != null && !spec.networkMode().isBlank() && !spec.hasPortBindings()) {
             hostConfig.withNetworkMode(spec.networkMode());
+        }
+
+        if (spec.nanoCpus() != null && spec.nanoCpus() > 0) {
+            hostConfig.withNanoCPUs(spec.nanoCpus());
         }
 
         // Mounts (named volumes, bind mounts)

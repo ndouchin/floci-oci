@@ -95,6 +95,9 @@ class OkeClusterManagerTest {
         lenient().when(specBuilder.withPrivileged(org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(specBuilder);
         lenient().when(specBuilder.withLabels(any())).thenReturn(specBuilder);
         lenient().when(specBuilder.withDockerNetwork(any())).thenReturn(specBuilder);
+        lenient().when(specBuilder.withPrimaryNetwork(anyString())).thenReturn(specBuilder);
+        lenient().when(specBuilder.withLabel(anyString(), anyString())).thenReturn(specBuilder);
+        lenient().when(lifecycleManager.networkSubnet(anyString())).thenReturn(Optional.of("10.0.10.0/24"));
         lenient().when(specBuilder.withHostDockerInternalOnLinux()).thenReturn(specBuilder);
         lenient().when(specBuilder.build()).thenReturn(new ContainerSpec("rancher/k3s:v1.30.1-k3s1"));
 
@@ -387,7 +390,8 @@ class OkeClusterManagerTest {
         manager.startCluster(cluster);
 
         verify(specBuilder).withEntrypoint(OkeClusterManager.K3S_ENTRYPOINT);
-        verify(specBuilder).withCmd(List.of("k3s", "server", "--disable=traefik",
+        verify(specBuilder).withCmd(List.of("k3s", "server", "--disable-agent", "--egress-selector-mode=cluster",
+                "--disable=traefik",
                 "--kube-apiserver-arg=token-auth-file=" + OkeClusterManager.TOKEN_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-config-file=" + OkeClusterManager.WEBHOOK_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-version=v1",
@@ -396,6 +400,7 @@ class OkeClusterManagerTest {
         verify(specBuilder).withEnv(OkeClusterManager.WEBHOOK_KUBECONFIG_ENV, manager.webhookKubeconfig(cluster));
         verify(specBuilder).withEnv(OkeClusterManager.TLS_SAN_ENV,
                 ContainerStorageHelper.dockerName(config, "oke-" + cluster.getId()));
+        verify(specBuilder).withPrimaryNetwork(ContainerStorageHelper.dockerName(config, "oke-net-" + cluster.getId()));
         verify(specBuilder).withDockerNetwork(Optional.empty());
         verify(specBuilder).withHostDockerInternalOnLinux();
         assertNull(cluster.getLifecycleState(), "real mode leaves ACTIVE to the readiness poller");
@@ -495,7 +500,8 @@ class OkeClusterManagerTest {
         when(lifecycleManager.containerEnv(anyString())).thenReturn(List.of(
                 OkeClusterManager.API_TOKEN_ENV + "=" + cluster.getApiToken(),
                 OkeClusterManager.WEBHOOK_KUBECONFIG_ENV + "=" + webhookKubeconfig,
-                OkeClusterManager.TLS_SAN_ENV + "=" + tlsSan));
+                OkeClusterManager.TLS_SAN_ENV + "=" + tlsSan,
+                OkeClusterManager.SERVER_ARGS_ENV + "=" + String.join(" ", OkeClusterManager.buildServerArgs(cluster))));
         when(lifecycleManager.containerLabels(anyString())).thenReturn(
                 Map.of(ContainerStorageHelper.REGION_LABEL, "us-ashburn-1"));
 
@@ -528,7 +534,8 @@ class OkeClusterManagerTest {
         when(lifecycleManager.containerEnv(anyString())).thenReturn(List.of(
                 OkeClusterManager.API_TOKEN_ENV + "=" + cluster.getApiToken(),
                 OkeClusterManager.WEBHOOK_KUBECONFIG_ENV + "=" + webhookKubeconfig,
-                OkeClusterManager.TLS_SAN_ENV + "=" + tlsSan));
+                OkeClusterManager.TLS_SAN_ENV + "=" + tlsSan,
+                OkeClusterManager.SERVER_ARGS_ENV + "=" + String.join(" ", OkeClusterManager.buildServerArgs(cluster))));
         when(lifecycleManager.containerLabels(anyString())).thenReturn(
                 Map.of(ContainerStorageHelper.REGION_LABEL, "us-ashburn-1"));
         when(lifecycleManager.createAndStart(any())).thenReturn(new ContainerLifecycleManager.ContainerInfo("c-new", Map.of()));
@@ -696,8 +703,11 @@ class OkeClusterManagerTest {
                         "io.floci.service", "oke",
                         "io.floci.resource-id", "ocid1.cluster.oc1.iad.labelled001",
                         "io.floci.compartment", "ocid1.compartment.oc1..labelled",
-                        "io.floci.region", "us-ashburn-1"),
+                        "io.floci.region", "us-ashburn-1",
+                        OkeClusterManager.CLUSTER_LABEL, "ocid1.cluster.oc1.iad.labelled001"),
                 spec.getValue().labels());
+        assertEquals(ContainerStorageHelper.dockerName(config, "oke-net-" + cluster.getId()),
+                spec.getValue().primaryNetwork(), "k3s must start on the cluster network to advertise an address on it");
     }
 
     @Test

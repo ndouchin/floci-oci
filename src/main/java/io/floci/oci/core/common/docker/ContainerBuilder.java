@@ -129,6 +129,9 @@ public class ContainerBuilder {
         private final List<String> groupAdd = new ArrayList<>();
         private final List<String> dnsServers = new ArrayList<>();
         private final Map<String, String> labels = new LinkedHashMap<>();
+        private String primaryNetwork;
+        private String ipv4Address;
+        private Long nanoCpus;
 
         Builder(String image, EmulatorConfig config, DockerHostResolver dockerHostResolver,
                 EmbeddedDnsServer embeddedDnsServer,
@@ -235,6 +238,29 @@ public class ContainerBuilder {
          */
         public Builder withExposedPort(int port) {
             this.exposedPorts.add(port);
+            return this;
+        }
+
+        /**
+         * Creates the container on {@code network}, also when it publishes ports. The network set
+         * by {@link #withDockerNetwork} or {@link #withNetworkMode}, if any, is connected after the
+         * start. Use it when the process inside must see that network from its first instant, as
+         * k3s does when it picks the address it advertises.
+         */
+        public Builder withPrimaryNetwork(String network) {
+            this.primaryNetwork = network;
+            return this;
+        }
+
+        /** A fixed address on the network the container is created on, which needs a configured subnet. */
+        public Builder withIpv4Address(String address) {
+            this.ipv4Address = address;
+            return this;
+        }
+
+        /** Limits the container to {@code nanoCpus} billionths of a CPU (Docker {@code --cpus}). */
+        public Builder withNanoCpus(long nanoCpus) {
+            this.nanoCpus = nanoCpus;
             return this;
         }
 
@@ -452,7 +478,10 @@ public class ContainerBuilder {
                     workingDir,
                     user,
                     List.copyOf(groupAdd),
-                    Map.copyOf(labels)
+                    Map.copyOf(labels),
+                    primaryNetwork,
+                    ipv4Address,
+                    nanoCpus
             );
         }
     }

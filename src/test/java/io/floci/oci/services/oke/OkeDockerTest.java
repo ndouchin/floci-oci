@@ -12,6 +12,7 @@ import io.quarkus.test.junit.TestProfile;
 import io.restassured.config.RestAssuredConfig;
 import io.restassured.config.SSLConfig;
 import io.restassured.http.ContentType;
+import io.restassured.path.json.JsonPath;
 import io.restassured.response.Response;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeAll;
@@ -35,6 +36,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -49,6 +51,7 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -70,7 +73,9 @@ class OkeDockerTest {
     private static String compartment;
     private static final String VCN = "ocid1.vcn.oc1.iad.dockervcn";
     private static final String USER = "ocid1.user.oc1..okedockeruser";
-    private static final Duration ACTIVE_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration ACTIVE_TIMEOUT = Duration.ofSeconds(180);
+    private static final Duration NODE_POOL_TIMEOUT = Duration.ofSeconds(240);
+    private static final String WORKER_SUBNET = "ocid1.subnet.oc1.iad.aaaaaaaadockerworkers";
 
     @Inject
     EmulatorConfig config;
@@ -82,6 +87,7 @@ class OkeDockerTest {
     DockerClient docker;
 
     private String clusterId;
+    private String nodePoolId;
     private String workRequestId;
     private int apiPort;
     private KeyStore clusterCa;
@@ -230,15 +236,96 @@ class OkeDockerTest {
     }
 
     @Test
-    @Order(6)
-    void test6_deleteRemovesTheSidecarAndEveryVolumeItMounted() throws InterruptedException {
+    @Order(10)
+    void test10_aNodePoolRunsOneK3sAgentPerNodeWithOkeNamesLabelsAndProviderIds() throws InterruptedException {
+        Map<String, Object> details = new HashMap<>();
+        details.put("compartmentId", compartment);
+        details.put("clusterId", clusterId);
+        details.put("name", "workers");
+        details.put("nodeShape", "VM.Standard.E4.Flex");
+        details.put("nodeShapeConfig", Map.of("ocpus", 1, "memoryInGBs", 2));
+        details.put("initialNodeLabels", List.of(Map.of("key", "team", "value", "payments"),
+                Map.of("key", "tier.kubernetes.io/class", "value", "gold")));
+        details.put("nodeConfigDetails", Map.of("size", 2, "placementConfigs", List.of(
+                Map.of("availabilityDomain", "Floc:US-ASHBURN-AD-1", "subnetId", WORKER_SUBNET))));
+        String poolWorkRequest = given().contentType(ContentType.JSON).body(details)
+            .when().post("/20180222/nodePools")
+            .then().statusCode(202).extract().header("opc-work-request-id");
+        nodePoolId = OkeWorkRequests.createdId(poolWorkRequest);
+        given().when().get("/20180222/nodePools/{id}", nodePoolId)
+            .then().statusCode(200).body("lifecycleState", equalTo("CREATING"));
+
+        awaitNodePool(nodePoolId, "ACTIVE");
+        given().when().get("/20180222/workRequests/{id}", poolWorkRequest)
+            .then().statusCode(200).body("status", equalTo("SUCCEEDED"));
+
+        List<Map<String, Object>> apiNodes = given().when().get("/20180222/nodePools/{id}", nodePoolId)
+            .then().statusCode(200).extract().path("nodes");
+        assertEquals(2, apiNodes.size());
+        JsonPath kubeNodes = kube("/api/v1/nodes");
+        assertEquals(2, kubeNodes.getList("items").size(), "the control plane runs no kubelet: " + kubeNodes.prettify());
+        for (Map<String, Object> apiNode : apiNodes) {
+            String name = (String) apiNode.get("privateIp");
+            assertEquals("ACTIVE", apiNode.get("lifecycleState"));
+            JsonPath node = kube("/api/v1/nodes/" + name);
+            assertEquals("oci://" + apiNode.get("id"), node.getString("spec.providerID"));
+            Map<String, String> labels = node.getMap("metadata.labels");
+            assertEquals("VM.Standard.E4.Flex", labels.get("node.kubernetes.io/instance-type"));
+            assertEquals("iad", labels.get("topology.kubernetes.io/region"));
+            assertEquals("US-ASHBURN-AD-1", labels.get("topology.kubernetes.io/zone"));
+            assertEquals(apiNode.get("faultDomain"), labels.get("oci.oraclecloud.com/fault-domain"));
+            assertEquals("", labels.get("node-role.kubernetes.io/node"));
+            assertEquals("payments", labels.get("team"));
+            assertEquals("gold", labels.get("tier.kubernetes.io/class"));
+            assertEquals(apiNode.get("name"), labels.get("displayName"));
+            assertEquals(compartment, node.getString("metadata.annotations['oci.oraclecloud.com/compartment-id']"));
+            assertEquals("True", node.getString("status.conditions.find { it.type == 'Ready' }.status"));
+            assertEquals("v1.35.2+k3s1", node.getString("status.nodeInfo.kubeletVersion"));
+        }
+    }
+
+    @Test
+    @Order(11)
+    void test11_shrinkingANodePoolDeletesTheNodeAndItsAgent() throws InterruptedException {
+        List<Map<String, Object>> before = given().when().get("/20180222/nodePools/{id}", nodePoolId)
+            .then().statusCode(200).extract().path("nodes");
+        String removedName = (String) before.get(1).get("privateIp");
+        String removedContainer = ContainerStorageHelper.dockerName(config, "oke-node-" + before.get(1).get("id"));
+        assertTrue(exists(() -> docker.inspectContainerCmd(removedContainer).exec()));
+
+        given().contentType(ContentType.JSON).body(Map.of("nodeConfigDetails", Map.of("size", 1)))
+            .when().put("/20180222/nodePools/{id}", nodePoolId)
+            .then().statusCode(202);
+
+        awaitNodePool(nodePoolId, "ACTIVE");
+        assertFalse(exists(() -> docker.inspectContainerCmd(removedContainer).exec()));
+        Instant deadline = Instant.now().plus(Duration.ofSeconds(30));
+        while (kubeStatus("/api/v1/nodes/" + removedName) != 404 && Instant.now().isBefore(deadline)) {
+            Thread.sleep(1000);
+        }
+        assertEquals(404, kubeStatus("/api/v1/nodes/" + removedName));
+        assertEquals(1, kube("/api/v1/nodes").getList("items").size());
+    }
+
+    @Test
+    @Order(99)
+    void test99_deleteRemovesTheSidecarAgentsNetworkAndEveryVolume() throws InterruptedException {
         String container = ContainerStorageHelper.dockerName(config, "oke-" + clusterId);
-        // The named k3s data volume and the anonymous ones the k3s image declares.
-        List<String> volumes = docker.inspectContainerCmd(container).exec().getMounts().stream()
-                .filter(mount -> mount.getName() != null)
-                .map(InspectContainerResponse.Mount::getName)
-                .toList();
+        String network = ContainerStorageHelper.dockerName(config, "oke-net-" + clusterId);
+        List<String> containers = new ArrayList<>(List.of(container));
+        docker.listContainersCmd().withShowAll(true)
+                .withLabelFilter(Map.of(OkeClusterManager.CLUSTER_LABEL, clusterId)).exec()
+                .forEach(c -> containers.add(c.getId()));
+        // The named k3s data volumes and the anonymous ones the k3s image declares.
+        List<String> volumes = new ArrayList<>();
+        for (String name : containers) {
+            docker.inspectContainerCmd(name).exec().getMounts().stream()
+                    .filter(mount -> mount.getName() != null)
+                    .map(InspectContainerResponse.Mount::getName)
+                    .forEach(volumes::add);
+        }
         assertTrue(volumes.size() > 1, "expected the named volume plus k3s's anonymous ones: " + volumes);
+        assertTrue(containers.size() > 1, "expected the server and at least one agent: " + containers);
 
         given()
             .when().delete("/20180222/clusters/{id}", clusterId)
@@ -248,7 +335,10 @@ class OkeDockerTest {
         while (exists(() -> docker.inspectContainerCmd(container).exec()) && Instant.now().isBefore(deadline)) {
             Thread.sleep(500);
         }
-        assertFalse(exists(() -> docker.inspectContainerCmd(container).exec()), "sidecar " + container + " is still there");
+        for (String name : containers) {
+            assertFalse(exists(() -> docker.inspectContainerCmd(name).exec()), "container " + name + " is still there");
+        }
+        assertFalse(exists(() -> docker.inspectNetworkCmd().withNetworkId(network).exec()), "network " + network + " leaked");
         // Memory storage mode, so the named volume goes as well as the anonymous ones.
         for (String volume : volumes) {
             assertFalse(exists(() -> docker.inspectVolumeCmd(volume).exec()), "volume " + volume + " leaked");
@@ -263,6 +353,39 @@ class OkeDockerTest {
             // Docker answers 404 once the container or volume is gone, which is what we wait for.
             return false;
         }
+    }
+
+    private void awaitNodePool(String poolId, String state) throws InterruptedException {
+        Instant deadline = Instant.now().plus(NODE_POOL_TIMEOUT);
+        String current = null;
+        while (Instant.now().isBefore(deadline)) {
+            current = given().when().get("/20180222/nodePools/{id}", poolId)
+                .then().statusCode(200).extract().path("lifecycleState");
+            if (state.equals(current)) {
+                return;
+            }
+            assertNotEquals("FAILED", current, "node pool " + poolId + " failed");
+            Thread.sleep(2000);
+        }
+        assertEquals(state, current, "node pool " + poolId + " did not become " + state);
+    }
+
+    private String staticToken() {
+        return service.findCluster(config.defaultTenancyId(), clusterId).orElseThrow().getApiToken();
+    }
+
+    private JsonPath kube(String path) {
+        return given()
+            .config(RestAssuredConfig.config().sslConfig(SSLConfig.sslConfig().trustStore(clusterCa)))
+            .baseUri("https://127.0.0.1")
+            .port(apiPort)
+            .header("Authorization", "Bearer " + staticToken())
+            .when().get(path)
+            .then().statusCode(200).extract().jsonPath();
+    }
+
+    private int kubeStatus(String path) {
+        return kubeApi("Bearer " + staticToken(), path);
     }
 
     private int kubeApi(String bearer, String path) {

@@ -9,6 +9,7 @@ import io.floci.oci.core.storage.StorageBackend;
 import io.floci.oci.core.storage.TenancyAwareStorageBackend;
 import io.floci.oci.core.workrequest.StoredWorkRequest;
 import io.floci.oci.core.workrequest.WorkRequestService;
+import io.floci.oci.services.oke.model.StoredNode;
 import io.floci.oci.services.oke.model.StoredNodePool;
 import io.floci.oci.services.oke.model.StoredOkeCluster;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,9 +38,13 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -471,6 +476,7 @@ class OkeServiceTest {
         lenient().when(realConfig.defaultRegion()).thenReturn("us-ashburn-1");
         lenient().when(realConfig.services().oke().mock()).thenReturn(false);
         lenient().when(realConfig.services().oke().readyTimeoutSeconds()).thenReturn(300);
+        lenient().when(realConfig.services().oke().maxNodesPerCluster()).thenReturn(3);
         readinessManager = mock(OkeClusterManager.class);
         realWorkRequests = new WorkRequestService(new InMemoryStorage<>(), realConfig);
         clock = new MutableClock(Instant.parse("2026-10-01T12:00:00Z"));
@@ -606,6 +612,100 @@ class OkeServiceTest {
 
         assertEquals("ACTIVE", service.getCluster(clusterId).getLifecycleState());
         assertEquals("SUCCEEDED", realWorkRequests.get(workRequestId).getStatus());
+    }
+
+    private String activeRealCluster(OkeService service, String name) {
+        String clusterId = service.createCluster(COMPARTMENT, name, VCN, OkeVersions.DEFAULT_VERSION, null, null, null)
+                .cluster().getId();
+        when(readinessManager.probeReady(any())).thenReturn(Optional.of("Q0FEQVRB"));
+        service.pollReadiness();
+        lenient().when(readinessManager.readJoinToken(any())).thenReturn(Optional.of("K10join::server:secret"));
+        lenient().when(readinessManager.nodeContainerName(any())).thenAnswer(i -> "agent-" + ((StoredNode) i.getArgument(0)).getId());
+        lenient().when(readinessManager.isClusterRunning(any())).thenReturn(true);
+        return clusterId;
+    }
+
+    private static OkeService.NodePoolSettings placedIn(int size) {
+        return new OkeService.NodePoolSettings(null, Map.of("size", size, "placementConfigs", List.of(
+                Map.of("availabilityDomain", "Floc:US-ASHBURN-AD-1", "subnetId", "ocid1.subnet.oc1.iad.workers"))),
+                null, null, null, null, null, null, null);
+    }
+
+    @Test
+    void aRealNodePoolIsCreatingUntilItsAgentsAreReadyThenActive() {
+        OkeService service = realModeService();
+        String clusterId = activeRealCluster(service, "agents");
+        when(readinessManager.nodeReadiness(any())).thenReturn(Optional.of(Map.of()));
+
+        OkeService.CreateNodePoolResult created = service.createNodePool(COMPARTMENT, clusterId, "workers", null,
+                "VM.Standard.E4.Flex", null, null, null, placedIn(2));
+        String poolId = created.nodePool().getId();
+        assertEquals("CREATING", service.getNodePool(poolId).getLifecycleState());
+        assertEquals("IN_PROGRESS", realWorkRequests.get(created.workRequestId()).getStatus());
+
+        service.pollReadiness();
+        verify(readinessManager, times(2)).ensureNode(any(), any(), any());
+        assertEquals("CREATING", service.getNodePool(poolId).getLifecycleState());
+
+        List<String> addresses = service.getNodePool(poolId).getNodes().stream().map(StoredNode::getPrivateIp).toList();
+        when(readinessManager.nodeReadiness(any())).thenReturn(Optional.of(Map.of(
+                addresses.get(0), true, addresses.get(1), true, "floci-oci-oke-server", false)));
+        when(readinessManager.finishNode(any(), any(), any())).thenReturn(true);
+        service.pollReadiness();
+
+        StoredNodePool pool = service.getNodePool(poolId);
+        assertEquals("ACTIVE", pool.getLifecycleState());
+        assertTrue(pool.getNodes().stream().allMatch(node -> "ACTIVE".equals(node.getLifecycleState()) && node.isRunning()));
+        assertEquals("SUCCEEDED", realWorkRequests.get(created.workRequestId()).getStatus());
+        verify(readinessManager, atLeastOnce()).deleteStaleNodes(any(), argThat(expected -> expected.containsAll(addresses)
+                && expected.size() == 2), any());
+        assertFalse(pool.toWire().toString().contains("agent-"), "container names are internal");
+    }
+
+    @Test
+    void nodesPastTheCapExistInTheApiWithoutAnAgent() {
+        OkeService service = realModeService();
+        String clusterId = activeRealCluster(service, "capped");
+        when(readinessManager.nodeReadiness(any())).thenAnswer(i -> {
+            Map<String, Boolean> ready = new java.util.HashMap<>();
+            service.listNodePools(null, clusterId).forEach(p -> p.getNodes().forEach(n -> ready.put(n.getPrivateIp(), true)));
+            return Optional.of(ready);
+        });
+        when(readinessManager.finishNode(any(), any(), any())).thenReturn(true);
+
+        String first = service.createNodePool(COMPARTMENT, clusterId, "first", null, "VM.Standard.E4.Flex", null,
+                null, null, placedIn(2)).nodePool().getId();
+        service.pollReadiness();
+        String second = service.createNodePool(COMPARTMENT, clusterId, "second", null, "VM.Standard.E4.Flex", null,
+                null, null, placedIn(2)).nodePool().getId();
+        service.pollReadiness();
+
+        assertEquals(List.of(true, true), service.getNodePool(first).getNodes().stream().map(StoredNode::isRunning).toList());
+        StoredNodePool capped = service.getNodePool(second);
+        assertEquals(2, capped.getNodes().size(), "the API keeps the requested count");
+        assertEquals(List.of(true, false), capped.getNodes().stream().map(StoredNode::isRunning).toList());
+        assertTrue(capped.getNodes().get(1).getLifecycleDetails().contains("max-nodes-per-cluster"));
+        assertEquals("ACTIVE", capped.getLifecycleState());
+        String cappedNode = capped.getNodes().get(1).getId();
+        verify(readinessManager, never()).ensureNode(any(), any(), argThat(node -> node.getId().equals(cappedNode)));
+
+        service.updateNodePool(first, null, null, null, null, null, null,
+                new OkeService.NodePoolSettings(null, Map.of("size", 1), null, null, null, null, null, null, null));
+        verify(readinessManager).removeNode(any(), argThat(node -> node.getPrivateIp().endsWith(".17")), eq(true));
+        service.pollReadiness();
+        assertTrue(service.getNodePool(second).getNodes().get(1).isRunning(), "a freed slot goes to the next pool");
+    }
+
+    @Test
+    void anEmptyRealNodePoolIsActiveAtOnce() {
+        OkeService service = realModeService();
+        String clusterId = activeRealCluster(service, "empty");
+
+        OkeService.CreateNodePoolResult created = service.createNodePool(COMPARTMENT, clusterId, "empty", null,
+                "VM.Standard.E4.Flex", null, null, null, OkeService.NodePoolSettings.NONE);
+
+        assertEquals("ACTIVE", created.nodePool().getLifecycleState());
+        assertEquals("SUCCEEDED", realWorkRequests.get(created.workRequestId()).getStatus());
     }
 
     @Test
