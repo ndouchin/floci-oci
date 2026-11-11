@@ -24,6 +24,11 @@ class OkeShapesTest {
         assertThrows(OciException.class, () -> OkeShapes.size("VM.Standard.E4.Flex", Map.of("ocpus", 65.0f)));
         assertThrows(OciException.class,
                 () -> OkeShapes.size("VM.Standard.E4.Flex", Map.of("ocpus", 1.0f, "memoryInGBs", 65.0f)));
+        assertThrows(OciException.class,
+                () -> OkeShapes.size("VM.Standard.E4.Flex", Map.of("ocpus", 8.0f, "memoryInGBs", 4.0f)),
+                "at least 1 GB or one GB per OCPU, whichever is greater");
+        assertEquals(126, OkeShapes.size("VM.Standard.E5.Flex", Map.of("ocpus", 126.0f, "memoryInGBs", 1049.0f))
+                .ocpus());
     }
 
     @Test

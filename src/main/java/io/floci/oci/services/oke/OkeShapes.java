@@ -36,7 +36,7 @@ final class OkeShapes {
         fixed("VM.Standard.E2.1.Micro", 1, 1, 2, 0);
         flex("VM.Standard.E3.Flex", 64, 1024, 2, 16);
         flex("VM.Standard.E4.Flex", 64, 1024, 2, 16);
-        flex("VM.Standard.E5.Flex", 94, 1049, 2, 16);
+        flex("VM.Standard.E5.Flex", 126, 1049, 2, 16);
         flex("VM.Standard3.Flex", 32, 512, 2, 16);
         flex("VM.Optimized3.Flex", 18, 256, 2, 16);
         flex("VM.Standard.A1.Flex", 76, 472, 1, 6);
@@ -90,8 +90,9 @@ final class OkeShapes {
      * The size of one node of {@code shape}. A flexible shape takes {@code ocpus} and
      * {@code memoryInGBs} from {@code nodeShapeConfig}: one OCPU when unset, and the shape's default
      * memory per OCPU when only the OCPUs are set (Oracle does not document OKE's defaults; see
-     * the docs page). Out-of-range values are 400 InvalidParameter: "1 GB minimum; 64 GB per OCPU"
-     * up to the shape's maximum. A fixed shape ignores {@code nodeShapeConfig}.
+     * the docs page). Out-of-range values are 400 InvalidParameter: memory runs from "1 GB or a value
+     * matching the number of OCPUs, whichever is greater" to "64 GB per OCPU" up to the shape's
+     * maximum. A fixed shape ignores {@code nodeShapeConfig}.
      */
     static Size size(String shape, Map<String, Object> nodeShapeConfig) {
         Shape known = CATALOG.get(shape);
@@ -107,10 +108,11 @@ final class OkeShapes {
                     + known.maxOcpus());
         }
         double memory = number(nodeShapeConfig, "memoryInGBs", ocpus * known.defaultMemoryPerOcpu());
+        double minMemory = Math.max(1, ocpus);
         double maxMemory = Math.min(64 * ocpus, known.maxMemoryGb());
-        if (memory < 1 || memory > maxMemory) {
+        if (memory < minMemory || memory > maxMemory) {
             throw OciException.invalidParameter("nodeShapeConfig.memoryInGBs for " + shape + " with " + ocpus
-                    + " OCPUs must be between 1 and " + maxMemory);
+                    + " OCPUs must be between " + minMemory + " and " + maxMemory);
         }
         return new Size(ocpus, memory, vcpus(known, ocpus), 0);
     }
