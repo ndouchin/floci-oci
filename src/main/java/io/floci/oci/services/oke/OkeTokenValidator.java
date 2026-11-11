@@ -6,8 +6,6 @@ import io.floci.oci.config.EmulatorConfig;
 import io.floci.oci.core.auth.AuthContext;
 import io.floci.oci.core.auth.OciRequestSignature;
 import io.floci.oci.core.auth.OciSignatureParser;
-import io.floci.oci.services.identity.IdentityService;
-import io.floci.oci.services.identity.model.StoredApiKey;
 import io.floci.oci.services.oke.model.StoredOkeCluster;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -67,8 +65,8 @@ public class OkeTokenValidator {
     private final Set<String> warnedKeys = ConcurrentHashMap.newKeySet();
 
     @Inject
-    public OkeTokenValidator(EmulatorConfig config, IdentityService identity) {
-        this(Clock.systemUTC(), new IdentityKeyDirectory(identity),
+    public OkeTokenValidator(EmulatorConfig config, OkeKeyDirectory keys) {
+        this(Clock.systemUTC(), keys,
                 () -> OkeTokenVerification.parse(config.services().oke().tokenVerification()));
     }
 
@@ -277,41 +275,6 @@ public class OkeTokenValidator {
                     Arrays.asList(REQUIRED_SIGNED_HEADERS.split(" ")),
                     Map.of("date", date, "host", uri.getHost()));
             return OciRequestSignature.verify(key, signingString, signature);
-        }
-    }
-
-    /** Identity's users and API keys, read from the cluster's tenancy partition. */
-    static final class IdentityKeyDirectory implements OkeKeyDirectory {
-        private final IdentityService identity;
-
-        IdentityKeyDirectory(IdentityService identity) {
-            this.identity = identity;
-        }
-
-        @Override
-        public Optional<PublicKey> apiKey(String tenancyId, String userId, String fingerprint) {
-            return identity.apiKey(tenancyId, userId, fingerprint)
-                    .filter(key -> "ACTIVE".equals(key.getLifecycleState()))
-                    .flatMap(IdentityKeyDirectory::parse);
-        }
-
-        @Override
-        public boolean hasApiKeys(String tenancyId, String userId) {
-            return !identity.apiKeys(tenancyId, userId).isEmpty();
-        }
-
-        @Override
-        public boolean userExists(String tenancyId, String userId) {
-            return identity.user(tenancyId, userId).isPresent();
-        }
-
-        private static Optional<PublicKey> parse(StoredApiKey key) {
-            try {
-                return Optional.of(OciRequestSignature.publicKeyFromPem(key.getKeyValue()));
-            } catch (IllegalArgumentException e) {
-                LOG.warnv("Stored API key {0} is not a readable public key: {1}", key.getKeyId(), e.getMessage());
-                return Optional.empty();
-            }
         }
     }
 
