@@ -38,6 +38,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -795,12 +796,17 @@ public class OkeService implements Resettable, CompartmentUsage {
         return new CreateNodePoolResult(workRequestId, pool);
     }
 
+    private List<StoredNode> resizeNodes(StoredOkeCluster cluster, StoredNodePool pool) {
+        return resizeNodes(cluster, pool, Set.of());
+    }
+
     /**
      * Brings the pool's node list to its requested size. Nodes take the next free address of the
-     * cluster's node subnet; without a k3s agent behind them they are ACTIVE at once.
+     * cluster's node subnet other than {@code keepFree}; without a k3s agent behind them they are
+     * ACTIVE at once.
      */
-    private List<StoredNode> resizeNodes(StoredOkeCluster cluster, StoredNodePool pool) {
-        Set<Integer> usedHosts = new HashSet<>();
+    private List<StoredNode> resizeNodes(StoredOkeCluster cluster, StoredNodePool pool, Set<Integer> keepFree) {
+        Set<Integer> usedHosts = new HashSet<>(keepFree);
         for (StoredNodePool other : listNodePools(null, cluster.getId())) {
             if (!other.getId().equals(pool.getId())) {
                 other.getNodes().forEach(node -> usedHosts.add(OkeNodePools.hostOf(node.getPrivateIp())));
@@ -839,8 +845,11 @@ public class OkeService implements Resettable, CompartmentUsage {
      * every node with a new one. Without cycling, OKE leaves running nodes on their version and only
      * new nodes take the pool's ("Upgrading Managed Nodes"). floci-oci replaces all nodes at once,
      * not {@code maximumSurge} and {@code maximumUnavailable} at a time.
+     *
+     * @return the addresses of the replaced nodes, which their replacements do not take: a new
+     *         instance gets a new address
      */
-    private void cycleNodes(StoredOkeCluster cluster, StoredNodePool pool) {
+    private Set<Integer> cycleNodes(StoredOkeCluster cluster, StoredNodePool pool) {
         Object modes = pool.getNodePoolCyclingDetails().get("cycleModes");
         boolean bootVolumeReplace = modes instanceof List<?> list && list.contains("BOOT_VOLUME_REPLACE");
         if (bootVolumeReplace) {
@@ -849,16 +858,19 @@ public class OkeService implements Resettable, CompartmentUsage {
                 node.setLifecycleState(realMode() ? "UPDATING" : "ACTIVE");
                 finishedNodes.remove(node.getId());
             }
-            return;
+            return Set.of();
         }
         List<StoredNode> replaced = new ArrayList<>(pool.getNodes());
         pool.getNodes().clear();
+        Set<Integer> addresses = new HashSet<>();
         for (StoredNode node : replaced) {
+            addresses.add(OkeNodePools.hostOf(node.getPrivateIp()));
             finishedNodes.remove(node.getId());
             if (realMode()) {
                 clusterManager.removeNode(cluster, node, true);
             }
         }
+        return addresses;
     }
 
     /** The availability domain of nodes placed through the deprecated {@code subnetIds}. */
@@ -960,10 +972,8 @@ public class OkeService implements Resettable, CompartmentUsage {
         if (definedTags != null) {
             pool.setDefinedTags(definedTags);
         }
-        if (newVersion && cyclingEnabled(pool)) {
-            cycleNodes(cluster, pool);
-        }
-        resizeNodes(cluster, pool);
+        Set<Integer> replacedAddresses = newVersion && cyclingEnabled(pool) ? cycleNodes(cluster, pool) : Set.of();
+        resizeNodes(cluster, pool, replacedAddresses);
 
         StoredWorkRequest.Resource res = WorkRequestService.resource(
             "nodepool", "UPDATED", nodePoolId, "/20180222/nodePools/" + nodePoolId
@@ -1137,8 +1147,11 @@ public class OkeService implements Resettable, CompartmentUsage {
         }
     }
 
-    /** One node to run, with what starting its agent needs, read under the service lock. */
-    private record NodeWork(StoredNodePool pool, StoredNode node) {}
+    /**
+     * One node to run, with what starting its agent needs and the version it had, read under the
+     * service lock.
+     */
+    private record NodeWork(StoredNodePool pool, StoredNode node, String version) {}
 
     /**
      * One pass over a cluster's worker nodes: the first {@code max-nodes-per-cluster} nodes, by node
@@ -1167,7 +1180,7 @@ public class OkeService implements Resettable, CompartmentUsage {
                 for (StoredNode node : List.copyOf(pool.getNodes())) {
                     if (budget > 0) {
                         budget--;
-                        running.add(new NodeWork(pool, node));
+                        running.add(new NodeWork(pool, node, node.getKubernetesVersion()));
                     } else {
                         skipped++;
                     }
@@ -1200,10 +1213,10 @@ public class OkeService implements Resettable, CompartmentUsage {
             }
         }
 
-        Set<String> runningIds = new HashSet<>();
+        Map<String, String> startedVersions = new HashMap<>();
         Map<String, String> startFailures = new HashMap<>();
         for (NodeWork work : running) {
-            runningIds.add(work.node().getId());
+            startedVersions.put(work.node().getId(), work.version());
             try {
                 if (clusterManager.ensureNode(cluster, work.pool(), work.node())) {
                     finishedNodes.remove(work.node().getId());
@@ -1228,6 +1241,7 @@ public class OkeService implements Resettable, CompartmentUsage {
         }
 
         List<StoredNode> orphans = new ArrayList<>();
+        Set<String> expectedAgents = new HashSet<>();
         boolean settled;
         synchronized (this) {
             if (findCluster(owner, clusterId).isEmpty()) {
@@ -1235,17 +1249,27 @@ public class OkeService implements Resettable, CompartmentUsage {
             }
             settled = true;
             Set<String> present = new HashSet<>();
+            int budget = config.services().oke().maxNodesPerCluster();
             for (StoredNodePool pool : clusterPools(owner, clusterId)) {
                 boolean allActive = true;
                 for (StoredNode node : pool.getNodes()) {
                     present.add(node.getId());
-                    if (!runningIds.contains(node.getId())) {
+                    if (budget <= 0) {
                         node.setRunning(false);
                         node.setContainerName(null);
                         node.setLifecycleState("ACTIVE");
                         node.setLifecycleDetails("floci-oci runs at most "
                                 + config.services().oke().maxNodesPerCluster()
                                 + " nodes per cluster (max-nodes-per-cluster): this node has no Kubernetes node");
+                        continue;
+                    }
+                    budget--;
+                    expectedAgents.add(node.getId());
+                    if (!startedVersions.containsKey(node.getId())
+                            || !Objects.equals(startedVersions.get(node.getId()), node.getKubernetesVersion())) {
+                        // Added or cycled while this pass ran: the next pass starts it.
+                        allActive = false;
+                        settled = false;
                         continue;
                     }
                     node.setRunning(true);
@@ -1276,6 +1300,7 @@ public class OkeService implements Resettable, CompartmentUsage {
         for (StoredNode orphan : orphans) {
             clusterManager.removeNode(cluster, orphan, true);
         }
+        clusterManager.removeOrphanAgents(cluster, expectedAgents);
         return settled;
     }
 

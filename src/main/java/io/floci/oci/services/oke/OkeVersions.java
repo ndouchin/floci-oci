@@ -59,8 +59,16 @@ final class OkeVersions {
      * which accepted any version string, keeps the one image every cluster ran on then.
      */
     static String image(String repository, String name) {
-        Version version = name == null ? LEGACY.getFirst() : runnable(name).orElse(LEGACY.getFirst());
-        return repository + ":" + version.k3sTag();
+        return repository + ":" + runningVersion(name).k3sTag();
+    }
+
+    /** The Kubernetes version {@link #image} runs for {@code name}. */
+    static String running(String name) {
+        return runningVersion(name).name();
+    }
+
+    private static Version runningVersion(String name) {
+        return name == null ? LEGACY.getFirst() : runnable(name).orElse(LEGACY.getFirst());
     }
 
     /**

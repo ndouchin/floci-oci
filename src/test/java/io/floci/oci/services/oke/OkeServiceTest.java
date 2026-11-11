@@ -717,6 +717,56 @@ class OkeServiceTest {
     }
 
     @Test
+    void aNodeAddedWhileAReconcilePassRunsWaitsForTheNextPass() {
+        OkeService service = realModeService();
+        String clusterId = activeRealCluster(service, "racing");
+        when(readinessManager.nodeReadiness(any())).thenAnswer(i -> {
+            Map<String, Boolean> ready = new java.util.HashMap<>();
+            service.listNodePools(null, clusterId).forEach(p -> p.getNodes().forEach(n -> ready.put(n.getPrivateIp(), true)));
+            return Optional.of(ready);
+        });
+        when(readinessManager.finishNode(any(), any(), any())).thenReturn(true);
+        String poolId = service.createNodePool(COMPARTMENT, clusterId, "racing", null, "VM.Standard.E4.Flex", null,
+                null, null, placedIn(1)).nodePool().getId();
+        service.pollReadiness();
+        assertEquals("ACTIVE", service.getNodePool(poolId).getLifecycleState());
+
+        when(readinessManager.ensureNode(any(), any(), any())).thenAnswer(i -> {
+            if (service.getNodePool(poolId).getNodes().size() == 1) {
+                service.updateNodePool(poolId, null, null, null, null, null, null,
+                        new OkeService.NodePoolSettings(null, Map.of("size", 2), null, null, null, null, null, null, null));
+            }
+            return false;
+        });
+        service.reconcile(TENANCY, clusterId);
+
+        StoredNodePool pool = service.getNodePool(poolId);
+        StoredNode added = pool.getNodes().get(1);
+        assertEquals("CREATING", added.getLifecycleState(), "a node the pass did not start is not past the cap");
+        assertNull(added.getLifecycleDetails());
+        assertEquals("UPDATING", pool.getLifecycleState());
+
+        service.pollReadiness();
+        verify(readinessManager).ensureNode(any(), any(), argThat(node -> node.getId().equals(added.getId())));
+        assertEquals("ACTIVE", service.getNodePool(poolId).getLifecycleState());
+    }
+
+    @Test
+    void reconcileRemovesAgentsNoNodeOfTheClusterHas() {
+        OkeService service = realModeService();
+        String clusterId = activeRealCluster(service, "orphans");
+        when(readinessManager.nodeReadiness(any())).thenReturn(Optional.of(Map.of()));
+        StoredNodePool pool = service.createNodePool(COMPARTMENT, clusterId, "kept", null, "VM.Standard.E4.Flex",
+                null, null, null, placedIn(1)).nodePool();
+        String nodeId = pool.getNodes().getFirst().getId();
+
+        service.pollReadiness();
+
+        verify(readinessManager, atLeastOnce()).removeOrphanAgents(argThat(c -> c.getId().equals(clusterId)),
+                argThat(ids -> ids.equals(java.util.Set.of(nodeId))));
+    }
+
+    @Test
     void restoreRecreatesTheAgentsOfStoredNodePoolsOnceTheServerAnswers() {
         OkeService service = realModeService();
         String clusterId = activeRealCluster(service, "restored");
@@ -776,6 +826,7 @@ class OkeServiceTest {
 
         StoredNodePool replaced = service.createNodePool(COMPARTMENT, bootVolumeClusterId, "replaced", "v1.35.2",
                 "VM.Standard2.1", null, null, null, placedIn(2)).nodePool();
+        List<String> replacedAddresses = replaced.getNodes().stream().map(StoredNode::getPrivateIp).toList();
         service.updateNodePool(replaced.getId(), null, "v1.36.4", null, null, null, null,
                 new OkeService.NodePoolSettings(null, null, null, null, null, null, null,
                         Map.of("isNodeCyclingEnabled", true), null));
@@ -783,6 +834,8 @@ class OkeServiceTest {
         assertEquals(2, after.size());
         assertTrue(after.stream().allMatch(node -> "v1.36.4".equals(node.getKubernetesVersion())
                 && !originalIds.contains(node.getId())));
+        assertTrue(after.stream().noneMatch(node -> replacedAddresses.contains(node.getPrivateIp())),
+                "a replacement instance gets a new address, so its node is not mistaken for the old one");
     }
 
     @Test

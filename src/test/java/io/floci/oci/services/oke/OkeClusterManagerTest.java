@@ -471,6 +471,68 @@ class OkeClusterManagerTest {
     }
 
     @Test
+    void removingANodeStopsItsAgentBeforeDeletingItsKubernetesNode() {
+        StoredOkeCluster cluster = adoptableCluster("ocid1.cluster.oc1.iad.removal001");
+        when(lifecycleManager.isContainerRunning(containerName(cluster))).thenReturn(true);
+        when(lifecycleManager.exec(anyString(), any(), anyList(), any()))
+                .thenReturn(new ContainerLifecycleManager.ExecResult(0, "", ""));
+        StoredNode node = agentNode();
+
+        manager.removeNode(cluster, node, true);
+
+        InOrder order = inOrder(lifecycleManager);
+        order.verify(lifecycleManager).removeIfExists(manager.nodeContainerName(node));
+        order.verify(lifecycleManager).exec(eq(containerName(cluster)), any(),
+                eq(List.of("kubectl", "delete", "node", "10.0.10.16", "--ignore-not-found", "--wait=false")), any());
+        verify(lifecycleManager).removeVolume(manager.nodeVolumeName(node));
+    }
+
+    @Test
+    void aNodeIsFinishedOnlyOnceItsKubeletRunsTheNodesVersion() {
+        StoredOkeCluster cluster = adoptableCluster("ocid1.cluster.oc1.iad.finish001");
+        StoredNode node = agentNode();
+        List<String> getVersion = List.of("kubectl", "get", "node", "10.0.10.16", "-o",
+                "jsonpath={.status.nodeInfo.kubeletVersion}");
+        lenient().when(lifecycleManager.exec(anyString(), any(), anyList(), any()))
+                .thenReturn(new ContainerLifecycleManager.ExecResult(0, "", ""));
+        when(lifecycleManager.exec(eq(containerName(cluster)), any(), eq(getVersion), any()))
+                .thenReturn(new ContainerLifecycleManager.ExecResult(0, "v1.34.10+k3s1", ""))
+                .thenReturn(new ContainerLifecycleManager.ExecResult(0, "v1.35.2+k3s1", ""));
+
+        assertFalse(manager.finishNode(cluster, agentPool("VM.Standard.E4.Flex"), node),
+                "the Node object still belongs to the kubelet the node ran before");
+        verify(lifecycleManager, never()).exec(anyString(), any(),
+                org.mockito.ArgumentMatchers.argThat(cmd -> cmd.contains("label")), any());
+        assertTrue(manager.finishNode(cluster, agentPool("VM.Standard.E4.Flex"), node));
+    }
+
+    @Test
+    void agentsOfNodesNoLongerInTheClusterAreRemovedWithTheirVolumes() {
+        StoredOkeCluster cluster = adoptableCluster("ocid1.cluster.oc1.iad.orphans001");
+        com.github.dockerjava.api.model.Container kept = mock(com.github.dockerjava.api.model.Container.class);
+        lenient().when(kept.getId()).thenReturn("kept-id");
+        when(kept.getLabels()).thenReturn(Map.of(ContainerStorageHelper.RESOURCE_ID_LABEL, "ocid1.instance.oc1.iad.kept",
+                OkeClusterManager.NODE_VOLUME_LABEL, "kept-volume"));
+        com.github.dockerjava.api.model.Container orphan = mock(com.github.dockerjava.api.model.Container.class);
+        when(orphan.getId()).thenReturn("orphan-id");
+        when(orphan.getLabels()).thenReturn(Map.of(ContainerStorageHelper.RESOURCE_ID_LABEL,
+                "ocid1.instance.oc1.iad.gone", OkeClusterManager.NODE_VOLUME_LABEL, "orphan-volume"));
+        com.github.dockerjava.api.model.Container serverContainer = mock(com.github.dockerjava.api.model.Container.class);
+        when(serverContainer.getLabels()).thenReturn(Map.of(ContainerStorageHelper.RESOURCE_ID_LABEL, cluster.getId()));
+        when(lifecycleManager.listByLabel(OkeClusterManager.CLUSTER_LABEL, cluster.getId()))
+                .thenReturn(List.of(kept, orphan, serverContainer));
+
+        manager.removeOrphanAgents(cluster, java.util.Set.of("ocid1.instance.oc1.iad.kept"));
+
+        verify(lifecycleManager).removeIfExists("orphan-id");
+        verify(lifecycleManager).removeVolume("orphan-volume");
+        verify(lifecycleManager, never()).removeIfExists("kept-id");
+        verify(lifecycleManager, never()).removeVolume("kept-volume");
+        String server = containerName(cluster);
+        verify(lifecycleManager, never()).removeIfExists(server);
+    }
+
+    @Test
     void aGpuShapeAgentCarriesOkesGpuTaint() {
         List<String> args = agentArgs("VM.GPU.A10.1");
 

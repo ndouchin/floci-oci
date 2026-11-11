@@ -467,6 +467,26 @@ class OkeDockerTest {
     }
 
     @Test
+    @Order(31)
+    void test31_cyclingANodePoolReplacesItsNodesOnTheNewVersion() throws InterruptedException {
+        String oldIp = given().when().get("/20180222/nodePools/{id}", nodePoolId)
+            .then().statusCode(200).extract().path("nodes[0].id");
+        given().contentType(ContentType.JSON)
+            .body(Map.of("kubernetesVersion", "v1.36.4",
+                    "nodePoolCyclingDetails", Map.of("isNodeCyclingEnabled", true)))
+            .when().put("/20180222/nodePools/{id}", nodePoolId)
+            .then().statusCode(202);
+
+        awaitNodePool(nodePoolId, "ACTIVE");
+        Map<String, Object> node = given().when().get("/20180222/nodePools/{id}", nodePoolId)
+            .then().statusCode(200).extract().path("nodes[0]");
+        assertNotEquals(oldIp, node.get("id"), "INSTANCE_REPLACE gives the node a new instance");
+        assertEquals("v1.36.4", node.get("kubernetesVersion"));
+        assertEquals("v1.36.4+k3s1",
+                kube("/api/v1/nodes/" + node.get("privateIp")).getString("status.nodeInfo.kubeletVersion"));
+    }
+
+    @Test
     @Order(99)
     void test99_deleteRemovesTheSidecarAgentsNetworkAndEveryVolume() throws InterruptedException {
         String container = ContainerStorageHelper.dockerName(config, "oke-" + clusterId);

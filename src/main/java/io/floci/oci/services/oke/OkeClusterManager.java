@@ -702,14 +702,15 @@ public class OkeClusterManager implements Resettable {
     }
 
     /**
-     * Removes a node: its Kubernetes Node object (so pods move on, as when OKE terminates an
-     * instance), its agent container and, with {@code dropVolume}, its volume.
+     * Removes a node: its agent container, then its Kubernetes Node object (so pods move on, as when
+     * OKE terminates an instance; a kubelet still running would register the node again) and, with
+     * {@code dropVolume}, its volume.
      */
     public void removeNode(StoredOkeCluster cluster, StoredNode node, boolean dropVolume) {
+        lifecycleManager.removeIfExists(nodeContainerName(node));
         if (node.getPrivateIp() != null && isClusterRunning(cluster)) {
             kubectl(cluster, List.of("delete", "node", node.getPrivateIp(), "--ignore-not-found", "--wait=false"));
         }
-        lifecycleManager.removeIfExists(nodeContainerName(node));
         if (dropVolume) {
             lifecycleManager.removeVolume(nodeVolumeName(node));
         }
@@ -756,6 +757,9 @@ public class OkeClusterManager implements Resettable {
      * @return whether every change applied
      */
     public boolean finishNode(StoredOkeCluster cluster, StoredNodePool pool, StoredNode node) {
+        if (!runsItsVersion(cluster, node)) {
+            return false;
+        }
         List<String> label = new ArrayList<>(List.of("label", "node", node.getPrivateIp(), "--overwrite"));
         OkeNodeLabels.postRegistrationLabels(pool).forEach((key, value) -> label.add(key + "=" + value));
         List<String> annotate = new ArrayList<>(List.of("annotate", "node", node.getPrivateIp(), "--overwrite"));
@@ -769,6 +773,17 @@ public class OkeClusterManager implements Resettable {
                             + quantity + "}}}")).succeeded();
         }
         return applied;
+    }
+
+    /**
+     * Whether the node's kubelet runs the node's version: after a boot volume replace, the Node object
+     * of the old kubelet can still read Ready under the same name until the new one registers.
+     */
+    private boolean runsItsVersion(StoredOkeCluster cluster, StoredNode node) {
+        ContainerLifecycleManager.ExecResult result = kubectl(cluster, List.of("get", "node", node.getPrivateIp(),
+                "-o", "jsonpath={.status.nodeInfo.kubeletVersion}"));
+        return result.succeeded()
+                && result.stdout().trim().startsWith(OkeVersions.running(node.getKubernetesVersion()) + "+");
     }
 
     /**
@@ -810,6 +825,24 @@ public class OkeClusterManager implements Resettable {
             LOG.warnv("Could not {0} metrics-server on cluster {1}: {2}", installed ? "deploy" : "remove",
                     cluster.getId(), e.getMessage());
             return false;
+        }
+    }
+
+    /**
+     * Removes the agents of the cluster, found by label, that belong to none of {@code nodeIds}, with
+     * their volumes: agents of nodes deleted while floci-oci was down, or past a lowered node cap.
+     */
+    public void removeOrphanAgents(StoredOkeCluster cluster, Set<String> nodeIds) {
+        for (Container container : lifecycleManager.listByLabel(CLUSTER_LABEL, cluster.getId())) {
+            Map<String, String> labels = container.getLabels() != null ? container.getLabels() : Map.of();
+            String volume = labels.get(NODE_VOLUME_LABEL);
+            if (volume == null || nodeIds.contains(labels.get(ContainerStorageHelper.RESOURCE_ID_LABEL))) {
+                continue;
+            }
+            LOG.infov("Removing k3s agent {0} of cluster {1}: no node of the cluster has it",
+                    labels.get(ContainerStorageHelper.RESOURCE_ID_LABEL), cluster.getId());
+            lifecycleManager.removeIfExists(container.getId());
+            lifecycleManager.removeVolume(volume);
         }
     }
 
