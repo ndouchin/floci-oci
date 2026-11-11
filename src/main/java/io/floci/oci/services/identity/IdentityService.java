@@ -612,6 +612,66 @@ public class IdentityService {
         return TenancyAwareStorageBackend.getIn(apiKeys, tenancyId, apiKeyStorageKey(userId, fingerprint));
     }
 
+    // ── Lookups in a named tenancy, for callers outside a request ───────────────
+    // OKE's token webhook is unauthenticated, so its request tenancy is the default one; these read
+    // the cluster's tenancy partition instead.
+
+    /** The {@code ACTIVE} groups {@code userId} belongs to in {@code tenancyId}. */
+    public List<StoredGroup> groupsOf(String tenancyId, String userId) {
+        List<StoredGroup> result = new ArrayList<>();
+        for (StoredUserGroupMembership membership : TenancyAwareStorageBackend.scanTenancy(memberships, tenancyId)) {
+            if (userId.equals(membership.getUserId())) {
+                TenancyAwareStorageBackend.getIn(groups, tenancyId, membership.getGroupId())
+                        .filter(group -> "ACTIVE".equals(group.getLifecycleState()))
+                        .ifPresent(result::add);
+            }
+        }
+        result.sort(Comparator.comparing(StoredGroup::getTimeCreated).thenComparing(StoredGroup::getId));
+        return result;
+    }
+
+    /** The {@code ACTIVE} group named {@code name} in {@code tenancyId}, ignoring case as OCI names do. */
+    public Optional<StoredGroup> groupByName(String tenancyId, String name) {
+        return TenancyAwareStorageBackend.scanTenancy(groups, tenancyId).stream()
+                .filter(group -> "ACTIVE".equals(group.getLifecycleState()) && name.equalsIgnoreCase(group.getName()))
+                .findFirst();
+    }
+
+    /** Every {@code ACTIVE} policy of {@code tenancyId}, in any compartment. */
+    public List<StoredPolicy> policies(String tenancyId) {
+        return TenancyAwareStorageBackend.scanTenancy(policies, tenancyId).stream()
+                .filter(policy -> "ACTIVE".equals(policy.getLifecycleState()))
+                .sorted(Comparator.comparing(StoredPolicy::getTimeCreated))
+                .toList();
+    }
+
+    /**
+     * {@code compartmentId} and the compartments above it, nearest first, ending with the root
+     * compartment ({@code id} the tenancy, no name). Empty when the compartment is not in
+     * {@code tenancyId}.
+     */
+    public List<StoredCompartment> compartmentAncestors(String tenancyId, String compartmentId) {
+        List<StoredCompartment> chain = new ArrayList<>();
+        String current = compartmentId;
+        while (current != null && !current.equals(tenancyId) && chain.size() <= MAX_DEPTH) {
+            Optional<StoredCompartment> compartment = TenancyAwareStorageBackend.getIn(compartments, tenancyId, current);
+            if (compartment.isEmpty()) {
+                return List.of();
+            }
+            chain.add(compartment.get());
+            current = compartment.get().getCompartmentId();
+        }
+        if (!tenancyId.equals(current)) {
+            return List.of();
+        }
+        StoredCompartment root = new StoredCompartment();
+        root.setId(tenancyId);
+        root.setCompartmentId(tenancyId);
+        root.setLifecycleState("ACTIVE");
+        chain.add(root);
+        return chain;
+    }
+
     private List<StoredApiKey> apiKeysOf(String userId) {
         String prefix = userId + "/";
         return apiKeys.scan(k -> k.startsWith(prefix)).stream()

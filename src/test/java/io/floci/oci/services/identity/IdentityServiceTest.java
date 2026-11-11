@@ -9,6 +9,8 @@ import io.floci.oci.core.storage.StorageBackend;
 import io.floci.oci.core.storage.TenancyAwareStorageBackend;
 import io.floci.oci.core.workrequest.StoredWorkRequest;
 import io.floci.oci.core.workrequest.WorkRequestService;
+import io.floci.oci.testing.GoldenOkeToken;
+import io.floci.oci.services.identity.model.StoredApiKey;
 import io.floci.oci.services.identity.model.StoredCompartment;
 import io.floci.oci.services.identity.model.StoredGroup;
 import io.floci.oci.services.identity.model.StoredPolicy;
@@ -351,6 +353,71 @@ class IdentityServiceTest {
                 .map(StoredPolicy::getId).toList());
         assertEquals(TENANCY, compartments.getForTenancy(TENANCY, own.getId())
                 .orElseThrow().getCompartmentId());
+    }
+
+    @Test
+    void lookupsOutsideARequestReadTheNamedTenancysPartitionWhateverTheRequestTenancy() {
+        InMemoryStorage<String, StoredCompartment> compartments = new InMemoryStorage<>();
+        InMemoryStorage<String, StoredUser> users = new InMemoryStorage<>();
+        InMemoryStorage<String, StoredGroup> groups = new InMemoryStorage<>();
+        InMemoryStorage<String, StoredUserGroupMembership> memberships = new InMemoryStorage<>();
+        InMemoryStorage<String, StoredPolicy> policies = new InMemoryStorage<>();
+        InMemoryStorage<String, StoredApiKey> apiKeys = new InMemoryStorage<>();
+        IdentityService owner = new IdentityService(view(compartments, TENANCY), view(users, TENANCY),
+                view(groups, TENANCY), view(memberships, TENANCY), view(policies, TENANCY),
+                view(new InMemoryStorage<>(), TENANCY), view(apiKeys, TENANCY), config, workRequests,
+                signedAs(TENANCY), List.of());
+        IdentityService other = new IdentityService(view(compartments, OTHER_TENANCY), view(users, OTHER_TENANCY),
+                view(groups, OTHER_TENANCY), view(memberships, OTHER_TENANCY), view(policies, OTHER_TENANCY),
+                view(new InMemoryStorage<>(), OTHER_TENANCY), view(apiKeys, OTHER_TENANCY), config, workRequests,
+                signedAs(OTHER_TENANCY), List.of());
+        StoredCompartment team = owner.createCompartment(null, "team", "d", null, null);
+        StoredCompartment project = owner.createCompartment(team.getId(), "project", "d", null, null);
+        StoredUser alice = owner.createUser("alice", "d", null, null, null);
+        StoredGroup devs = owner.createGroup("Devs", "d", null, null);
+        StoredGroup ops = owner.createGroup("Ops", "d", null, null);
+        owner.createGroup("Unrelated", "d", null, null);
+        owner.addUserToGroup(alice.getId(), devs.getId());
+        owner.addUserToGroup(alice.getId(), ops.getId());
+        StoredPolicy policy = owner.createPolicy(team.getId(), "p", "d",
+                List.of("Allow group Devs to manage clusters in compartment project"), null, null, null);
+        String fingerprint = owner.uploadApiKey(alice.getId(), GoldenOkeToken.PUBLIC_KEY_PEM).getFingerprint();
+
+        assertTrue(other.listUsers().isEmpty(), "the request-scoped reads stay in the request's tenancy");
+        assertEquals(alice.getId(),
+                other.apiKey(TENANCY, alice.getId(), fingerprint).orElseThrow().getUserId());
+        assertTrue(other.apiKey(OTHER_TENANCY, alice.getId(), fingerprint).isEmpty());
+        assertEquals(List.of(devs.getId(), ops.getId()).stream().sorted().toList(),
+                other.groupsOf(TENANCY, alice.getId()).stream().map(StoredGroup::getId).sorted().toList());
+        assertTrue(other.groupsOf(OTHER_TENANCY, alice.getId()).isEmpty());
+        assertEquals(List.of(policy.getId()), other.policies(TENANCY).stream().map(StoredPolicy::getId).toList());
+        assertTrue(other.policies(OTHER_TENANCY).isEmpty());
+        assertEquals(List.of(project.getId(), team.getId(), TENANCY),
+                other.compartmentAncestors(TENANCY, project.getId()).stream().map(StoredCompartment::getId).toList());
+        assertEquals(List.of("project", "team"),
+                other.compartmentAncestors(TENANCY, project.getId()).stream().limit(2)
+                        .map(StoredCompartment::getName).toList());
+        assertEquals(List.of(TENANCY),
+                other.compartmentAncestors(TENANCY, TENANCY).stream().map(StoredCompartment::getId).toList());
+        assertTrue(other.compartmentAncestors(OTHER_TENANCY, project.getId()).isEmpty(),
+                "a compartment of another tenancy has no ancestors there");
+        assertTrue(other.groupByName(TENANCY, "devs").isPresent(), "OCI group names are case-insensitive");
+        assertTrue(other.groupByName(OTHER_TENANCY, "Devs").isEmpty());
+    }
+
+    @Test
+    void groupsOfLeavesOutRemovedMemberships() {
+        StoredUser alice = service.createUser("alice", "d", null, null, null);
+        StoredGroup devs = service.createGroup("Devs", "d", null, null);
+        StoredUserGroupMembership membership = service.addUserToGroup(alice.getId(), devs.getId());
+
+        service.removeUserFromGroup(membership.getId());
+
+        assertTrue(service.groupsOf(TENANCY, alice.getId()).isEmpty());
+    }
+
+    private static <V> TenancyAwareStorageBackend<V> view(InMemoryStorage<String, V> delegate, String readsAs) {
+        return new TenancyAwareStorageBackend<>(delegate, () -> readsAs);
     }
 
     private static OciContext signedAs(String tenancy) {
