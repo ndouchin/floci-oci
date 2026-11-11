@@ -238,6 +238,73 @@ class OkeDockerTest {
     }
 
     @Test
+    @Order(6)
+    void test6_aRegisteredKeyMapsTheCallerThroughIamAndRbac() throws InterruptedException {
+        String user = given().contentType(ContentType.JSON)
+            .body(Map.of("name", "oke-docker-dev", "description", "OKE Docker test user"))
+            .when().post("/20160918/users").then().statusCode(200).extract().path("id");
+        String devs = given().contentType(ContentType.JSON)
+            .body(Map.of("name", "oke-docker-devs", "description", "OKE Docker test group"))
+            .when().post("/20160918/groups").then().statusCode(200).extract().path("id");
+        given().contentType(ContentType.JSON).body(Map.of("userId", user, "groupId", devs))
+            .when().post("/20160918/userGroupMemberships").then().statusCode(200);
+        given().contentType(ContentType.JSON).body(Map.of("key", ClusterTokenMinter.publicKeyPem()))
+            .when().post("/20160918/users/{userId}/apiKeys", user).then().statusCode(200);
+
+        JsonPath self = selfSubjectReview(freshToken(user));
+        assertEquals(user, self.getString("status.userInfo.username"));
+        List<String> groups = self.getList("status.userInfo.groups");
+        assertTrue(groups.contains(devs) && groups.contains("system:authenticated"), groups::toString);
+        assertFalse(groups.contains("system:masters"), groups::toString);
+        assertEquals(403, kubeApi("Bearer " + freshToken(user), "/api/v1/namespaces/default/pods"),
+                "a verified user without manage clusters has only what RBAC grants");
+
+        kubePost("/apis/rbac.authorization.k8s.io/v1/namespaces/default/rolebindings", Map.of(
+                "apiVersion", "rbac.authorization.k8s.io/v1", "kind", "RoleBinding",
+                "metadata", Map.of("name", "devs-view"),
+                "roleRef", Map.of("apiGroup", "rbac.authorization.k8s.io", "kind", "ClusterRole", "name", "view"),
+                "subjects", List.of(Map.of("apiGroup", "rbac.authorization.k8s.io", "kind", "Group", "name", devs))));
+        Instant deadline = Instant.now().plus(Duration.ofSeconds(30));
+        int status = kubeApi("Bearer " + freshToken(user), "/api/v1/namespaces/default/pods");
+        while (status != 200 && Instant.now().isBefore(deadline)) {
+            status = kubeApi("Bearer " + freshToken(user), "/api/v1/namespaces/default/pods");
+        }
+        assertEquals(200, status, "a RoleBinding to the IAM group OCID applies");
+
+        String administrators = given().contentType(ContentType.JSON)
+            .body(Map.of("name", "Administrators", "description", "Tenancy administrators"))
+            .when().post("/20160918/groups").then().statusCode(200).extract().path("id");
+        given().contentType(ContentType.JSON).body(Map.of("userId", user, "groupId", administrators))
+            .when().post("/20160918/userGroupMemberships").then().statusCode(200);
+        assertTrue(selfSubjectReview(freshToken(user)).getList("status.userInfo.groups").contains("system:masters"),
+                "tenancy administrators are cluster-admin with no binding");
+
+        assertEquals(401, kubeApi("Bearer " + ClusterTokenMinter.tamperSignature(freshToken(user)),
+                "/api/v1/namespaces"));
+    }
+
+    /**
+     * A token minted in a second no earlier token of this test used: the API server caches webhook
+     * verdicts for 30 s by token, and a token signed in the same second is the same string.
+     */
+    private String freshToken(String user) throws InterruptedException {
+        Thread.sleep(1100);
+        return ClusterTokenMinter.mint(config.defaultRegion(), clusterId, config.defaultTenancyId(), user, Instant.now());
+    }
+
+    private JsonPath selfSubjectReview(String token) {
+        return given()
+            .config(RestAssuredConfig.config().sslConfig(SSLConfig.sslConfig().trustStore(clusterCa)))
+            .baseUri("https://127.0.0.1")
+            .port(apiPort)
+            .header("Authorization", "Bearer " + token)
+            .contentType(ContentType.JSON)
+            .body(Map.of("apiVersion", "authentication.k8s.io/v1", "kind", "SelfSubjectReview"))
+            .when().post("/apis/authentication.k8s.io/v1/selfsubjectreviews")
+            .then().statusCode(201).extract().jsonPath();
+    }
+
+    @Test
     @Order(10)
     void test10_aNodePoolRunsOneK3sAgentPerNodeWithOkeNamesLabelsAndProviderIds() throws InterruptedException {
         Map<String, Object> details = new HashMap<>();
