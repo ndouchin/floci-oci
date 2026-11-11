@@ -439,6 +439,34 @@ class OkeDockerTest {
     }
 
     @Test
+    @Order(30)
+    void test30_aControlPlaneUpgradeRecreatesTheServerOnTheNewVersionAndKeepsTheNodes() throws InterruptedException {
+        given().contentType(ContentType.JSON).body(Map.of("kubernetesVersion", "v1.36.4"))
+            .when().put("/20180222/clusters/{id}", clusterId)
+            .then().statusCode(202);
+        assertEquals("UPDATING", given().when().get("/20180222/clusters/{id}", clusterId)
+            .then().statusCode(200).extract().path("lifecycleState"));
+
+        Instant deadline = Instant.now().plus(ACTIVE_TIMEOUT);
+        String state = null;
+        while (Instant.now().isBefore(deadline)) {
+            state = given().when().get("/20180222/clusters/{id}", clusterId)
+                .then().statusCode(200).extract().path("lifecycleState");
+            if (!"UPDATING".equals(state)) {
+                break;
+            }
+            Thread.sleep(2000);
+        }
+        assertEquals("ACTIVE", state);
+        assertEquals("v1.36.4+k3s1", kube("/version").getString("gitVersion"));
+        assertTrue(kube("/api/v1/nodes").getList("items").size() >= 2, "the nodes survive the upgrade");
+        String workerIp = given().when().get("/20180222/nodePools/{id}", nodePoolId)
+            .then().statusCode(200).extract().path("nodes[0].privateIp");
+        awaitKube("/api/v1/nodes/" + workerIp, "status.conditions.find { it.type == 'Ready' }.status", "True");
+        assertEquals("v1.35.2+k3s1", kube("/api/v1/nodes/" + workerIp).getString("status.nodeInfo.kubeletVersion"));
+    }
+
+    @Test
     @Order(99)
     void test99_deleteRemovesTheSidecarAgentsNetworkAndEveryVolume() throws InterruptedException {
         String container = ContainerStorageHelper.dockerName(config, "oke-" + clusterId);

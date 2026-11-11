@@ -585,6 +585,26 @@ class OkeServiceTest {
     }
 
     @Test
+    void aPollWhileTheUpgradeReplacesTheServerDoesNotFailTheCluster() {
+        OkeService service = realModeService();
+        String clusterId = service.createCluster(COMPARTMENT, "replacing", VCN, "v1.35.2", null, null, null)
+                .cluster().getId();
+        when(readinessManager.probeReady(any())).thenReturn(Optional.of("Q0FEQVRB"));
+        service.pollReadiness();
+        when(readinessManager.probeReady(any())).thenReturn(Optional.empty());
+        when(readinessManager.isClusterRunning(any())).thenReturn(false);
+        org.mockito.Mockito.doAnswer(i -> {
+            service.pollReadiness();
+            return null;
+        }).when(readinessManager).restartCluster(any());
+
+        service.updateCluster(clusterId, null, "v1.36.4", null, null, OkeService.ClusterSettings.NONE, null);
+
+        assertEquals("UPDATING", service.getCluster(clusterId).getLifecycleState(),
+                "the old server is gone and the new one not started yet while the image is pulled");
+    }
+
+    @Test
     void anUpgradeRecreatesTheServerAndStaysUpdatingUntilItAnswers() {
         OkeService service = realModeService();
         String clusterId = service.createCluster(COMPARTMENT, "upgrading", VCN, "v1.35.2", null, null, null)

@@ -613,13 +613,17 @@ public class OkeService implements Resettable, CompartmentUsage {
                 List.of(res));
         clusters.put(cluster.getId(), cluster);
         PendingCluster pending = new PendingCluster(cluster.getTenancyId(), clock.instant(), workRequestId);
-        pendingClusters.put(cluster.getId(), pending);
         try {
             clusterManager.restartCluster(cluster);
         } catch (RuntimeException e) {
+            pendingClusters.put(cluster.getId(), pending);
             finishCreate(pending, cluster, "FAILED", "FAILED", "The k3s server did not start on "
                     + cluster.getKubernetesVersion() + ": " + e.getMessage());
+            return workRequestId;
         }
+        // Only once the new server exists: the poller fails a pending cluster whose server is gone.
+        pendingClusters.put(cluster.getId(), new PendingCluster(cluster.getTenancyId(), clock.instant(),
+                workRequestId));
         return workRequestId;
     }
 
