@@ -1,7 +1,9 @@
 # OCI CLI & SDK Setup
 
 floci-oci parses the OCI request signature for tenancy/user context but **never verifies the
-RSA signature** — any locally generated API key works. No account, no real credentials.
+RSA signature**: any locally generated API key works. No account, no real credentials. The one
+exception is OKE: kubectl tokens signed with a key you upload to identity
+(`oci iam user api-key upload`) are verified and their caller mapped through IAM, as on OKE.
 
 ## OCI CLI
 

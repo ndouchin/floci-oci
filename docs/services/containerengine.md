@@ -104,6 +104,30 @@ Each class is served by a `local-path-provisioner` instance registered under tha
 - **Validation**: both must be IPv4 CIDR blocks between `/8` and `/28` that do not overlap ("must not overlap", [CIDR blocks][cidrs]), and the pod network must hold at least one `/25`; otherwise `400 InvalidParameter`. Oracle documents no error code or size limit for these cases, so both are floci-oci's choice.
 - **CNI**: k3s's flannel runs whatever `clusterPodNetworkOptions.cniType` says. `OCI_VCN_IP_NATIVE` (pods taking addresses from a VCN subnet) is stored and echoed but not emulated.
 
+### LoadBalancer Services
+
+On OKE, a Service of type `LoadBalancer` gets an OCI Load Balancer (the default) or, with `oci.oraclecloud.com/load-balancer-type: "nlb"`, an OCI Network Load Balancer, created by OKE's cloud controller manager; "The load balancer may take a few minutes to go from a pending state to being fully operational", and its address appears as the Service's `EXTERNAL-IP`, for example `192.0.2.22` ([Provisioning OCI Load Balancers][lb-services], [Network Load Balancers][nlb-services]). floci-oci emulates that controller for clusters created in real mode (`FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_MODE=emulated`, the default): k3s's own servicelb is off (`--disable=servicelb`) and floci-oci writes the OCI-shaped address into the Service's status.
+
+- **Which Services**: those of type `LoadBalancer` without `spec.loadBalancerClass`, the ones a cloud controller handles (kubernetes/cloud-provider `wantsLoadBalancer`); a Service with a class is left to whatever implements it.
+- **Addresses**: a public load balancer takes an address from `192.0.2.0/24` (`FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_PUBLIC_CIDR`, RFC 5737's TEST-NET-1, the range of Oracle's own example, never routed), unique across every cluster of the emulator, from `.10` up. An internal one (`service.beta.kubernetes.io/oci-load-balancer-internal: "true"`, or for an NLB `oci-network-load-balancer.oraclecloud.com/internal: "true"`) takes an address of the cluster's node subnet from `.254` down; node addresses go from `.16` up and the two never meet. `spec.loadBalancerIP` (a reserved public IP on OKE) is honored when it is a free address of the public range; `oci-network-load-balancer.oraclecloud.com/assigned-private-ipv4` when it is a free address of the node subnet. Addresses are stored, so they survive a restart.
+- **Status** (`loadBalancerToStatus` in oracle/oci-cloud-controller-manager): one `ingress` entry per address the load balancer has. A public OCI Load Balancer has its public address; an internal one its private address; a public NLB has a private and a public address (private first), or only the public one with `oci-network-load-balancer.oraclecloud.com/external-ip-only: "true"`. `oci.oraclecloud.com/ingress-ip-mode: Proxy|VIP` sets `ipMode`.
+- **Refused as the CCM refuses them**, with a `SyncLoadBalancerFailed` Warning event and the Service left `<pending>`: UDP on an OCI Load Balancer ("OCI load balancers do not support UDP"; use an NLB), UDP on an NLB whose security list management mode is not `None`, `sessionAffinity` other than `None`, `oci-load-balancer-shape: flexible` without `-shape-flex-min` and `-shape-flex-max`, an invalid boolean or `ingress-ip-mode`, `loadBalancerIP` on an internal load balancer, `assigned-private-ipv4` on an OCI Load Balancer, and an address floci-oci cannot give (outside the range, or taken).
+- **Lifecycle, as a cloud controller does it**: the `service.kubernetes.io/load-balancer-cleanup` finalizer is added first, the events `EnsuringLoadBalancer`, `EnsuredLoadBalancer`, `UpdatedLoadBalancer` (backends changed), `UnAvailableLoadBalancer` (no backend), `DeletingLoadBalancer` and `DeletedLoadBalancer` are recorded from `service-controller` with the upstream messages, and when the Service is deleted or stops being a LoadBalancer the address is released, its appliance removed and the finalizer dropped last. `FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_PROVISIONING_DELAY_SECONDS` (default 0) holds the status back to mimic OKE's "few minutes".
+- **Data path**: each load balancer is an appliance container (`floci-oci-oke-lb-<Service UID>`) started from the cluster's own k3s image, with `NET_ADMIN` and IP forwarding but not privileged, that holds the load balancer's addresses and forwards each Service port to the NodePort of the backend nodes, picked at random, masquerading the source. The backends are the Ready nodes of the cluster's node pools not labelled `node.kubernetes.io/exclude-from-external-load-balancers`; with `externalTrafficPolicy: Local`, only those with a ready endpoint of the Service. An internal appliance sits on the cluster network at its address; a public one on the Docker network `floci-oci-oke-lb-public` (created with the first public load balancer, removed with the last) at its public address, joined to the cluster network to reach the nodes. Every appliance also joins floci-oci's own network when floci-oci runs in a container. `loadBalancerSourceRanges` (IPv4) limits who is forwarded.
+- **Host ports**: each Service port is also published on the Docker host's `127.0.0.1`, at a free port by default (`FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_HOST_PORTS=dynamic`), at the Service's own port with `same-as-service` (a free port when it is taken), or not at all with `none`. The ports are written on the Service as the annotation `floci.io/load-balancer-host-ports`, for example `TCP/80=127.0.0.1:32768`, and kept when the appliance is replaced.
+
+| From | Internal address | Public address |
+|---|---|---|
+| A pod of the cluster | yes (kube-proxy, and the appliance) | yes (kube-proxy) |
+| A container on the cluster's network | yes | only when also on `floci-oci-oke-lb-public` |
+| A container on floci-oci's network | the appliance by name or its address on that network | same |
+| The Docker host (macOS included) | `127.0.0.1:<host port>` | same |
+| A Linux Docker host | also the address itself | also the address itself |
+
+- **Modes**: `servicelb` keeps k3s's servicelb, which publishes the node addresses as before; `off` disables it and leaves Services `<pending>`. A cluster keeps the mode it was created with: a cluster stored by an earlier floci-oci, which had servicelb, keeps it when it is restored, so its Services keep their addresses (recreate the cluster to move it).
+- **Not emulated**: OCI Load Balancer and Network Load Balancer resources (floci-oci has no Load Balancer service, so nothing appears in the OCI API, and `serviceLbSubnetIds` and `serviceLbConfig` are only echoed), real public addresses, shapes and bandwidth, health checks and backend policies, TLS listeners, security lists and NSGs, `node-label-selector`, client source address preservation (the appliance masquerades), `allocateLoadBalancerNodePorts: false` (no NodePort to forward to; the address is still reported), and IPv6.
+- **Not verified**: that a public NLB reports a private and a public address, and in which order (inferred from the CCM code); publishing an appliance's ports on Docker Desktop or colima (verified on Linux Docker only); real provisioning times.
+
 ### Cluster add-ons
 
 - **Defaults**: OKE deploys the Kubernetes Metrics Server only as an optional add-on, and "Optional cluster add-ons are not deployed by default" ([Overview of Cluster Add-ons][addons]). So k3s's bundled metrics-server is disabled and `kubectl top` fails until the `KubernetesMetricsServer` add-on is installed.
@@ -113,7 +137,7 @@ Each class is served by a `local-path-provisioner` instance registered under tha
 
 ### Restore at startup
 
-In persistent, hybrid or wal storage modes, floci-oci restores every stored cluster at startup: it adopts a surviving server (matched by container name, labels, image and flags) or recreates it on the surviving volume, keeping its CA; when the volume is gone it starts a fresh server and logs that the CA changed. It then adopts each node's agent (matched by labels, image, server address and join token), recreates missing ones, and removes agents no node of the cluster has. Node pools stored before nodes were run get their agents then. In memory mode nothing is restored. Clusters stored by an older floci-oci restart on the agentless control plane with OKE's networks and storage classes; their pods move to agent nodes and their existing Services keep their old addresses.
+In persistent, hybrid or wal storage modes, floci-oci restores every stored cluster at startup: it adopts a surviving server (matched by container name, labels, image and flags) or recreates it on the surviving volume, keeping its CA; when the volume is gone it starts a fresh server and logs that the CA changed. It then adopts each node's agent (matched by labels, image, server address and join token), recreates missing ones, and removes agents no node of the cluster has. Node pools stored before nodes were run get their agents then. Load balancers keep their stored addresses; the first controller pass adopts each appliance that still runs with the same configuration and recreates the others. In memory mode nothing is restored. Clusters stored by an older floci-oci restart on the agentless control plane with OKE's networks and storage classes; their pods move to agent nodes and their existing Services keep their old addresses, as they keep servicelb.
 
 ### Authentication
 
@@ -157,6 +181,7 @@ In persistent, hybrid or wal storage modes, floci-oci restores every stored clus
 ## What floci-oci decides where Oracle is silent
 
 - How a token is verified (OCI's signed-request check, inferred), the 5-minute window, and which callers are verified in each `token-verification` mode.
+- The load balancer address ranges, which end of the node subnet internal load balancers take, and the order of a public NLB's two addresses.
 
 - Error codes for an invalid `initialNodeLabels` entry, an invalid or overlapping `kubernetesNetworkConfig`, a node pool on a cluster that is not `ACTIVE`, an unknown, duplicate or dependent add-on, and add-ons on a basic cluster.
 - The default memory per OCPU of a flexible shape when `nodeShapeConfig` sets only the OCPUs, and the size of a shape outside the catalog.
@@ -180,6 +205,8 @@ In persistent, hybrid or wal storage modes, floci-oci restores every stored clus
 - [Compute Shapes](https://docs.oracle.com/en-us/iaas/Content/Compute/References/computeshapes.htm)
 - [Provisioning PVCs on the Block Volume Service](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingpersistentvolumeclaim_topic-Provisioning_PVCs_on_BV.htm)
 - [IPv4 CIDR Blocks and Kubernetes Engine (OKE)](https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengcidrblocks.htm)
+- [Provisioning OCI Load Balancers for Kubernetes Services of Type LoadBalancer](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingloadbalancers-subtopic.htm) and [Provisioning OCI Network Load Balancers](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingnetworkloadbalancers.htm)
+- oracle/oci-cloud-controller-manager at `93969b5` (`load_balancer_spec.go` annotations and validation, `load_balancer.go loadBalancerToStatus`, `load_balancer_util.go validateProtocols`) and kubernetes/cloud-provider `controllers/service/controller.go` (finalizer, events)
 - [Overview of Cluster Add-ons](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengintroducingclusteraddons.htm)
 - [Configuring Cluster Add-ons](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengconfiguringclusteraddons.htm)
 - [Working with the Kubernetes Metrics Server as a Cluster Add-on](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengworkingwithmetricsserver_cluster-add-on.htm)
@@ -205,6 +232,8 @@ In persistent, hybrid or wal storage modes, floci-oci restores every stored clus
 [pvc-bv]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingpersistentvolumeclaim_topic-Provisioning_PVCs_on_BV.htm
 [cidrs]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengcidrblocks.htm
 [addons]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengintroducingclusteraddons.htm
+[lb-services]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingloadbalancers-subtopic.htm
+[nlb-services]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingnetworkloadbalancers.htm
 [addons-config]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengconfiguringclusteraddons.htm
 [metrics-addon]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengworkingwithmetricsserver_cluster-add-on.htm
 [vllm]: https://docs.oracle.com/en/learn/deploy-vllm-production-stack-oke/index.html
@@ -235,6 +264,11 @@ oci ce cluster create-kubeconfig $E --cluster-id "ocid1.cluster.oc1.iad.demo" --
 
 # kubectl runs `oci ce cluster generate-token` for each request; real mode only
 KUBECONFIG=./kubeconfig kubectl get nodes
+
+# A LoadBalancer Service gets an OCI-shaped address and a port on 127.0.0.1
+KUBECONFIG=./kubeconfig kubectl expose deployment web --type=LoadBalancer --port=80 --target-port=8080
+KUBECONFIG=./kubeconfig kubectl get service web \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip} {.metadata.annotations.floci\.io/load-balancer-host-ports}'
 
 # kubectl top needs the metrics server add-on, as on OKE
 oci ce cluster install-addon $E --cluster-id "ocid1.cluster.oc1.iad.demo" --addon-name CertManager
