@@ -117,12 +117,25 @@ In persistent, hybrid or wal storage modes, floci-oci restores every stored clus
 
 ### Authentication
 
-- **kubectl Authentication**: The kubeconfig is the real OKE token version `2.0.0` shape: its user runs `oci ce cluster generate-token --cluster-id <ocid> --region <region>`, and its cluster entry carries the k3s CA, so TLS is verified. k3s does not know these tokens, so it sends each one to floci-oci in a Kubernetes `TokenReview` (a token webhook meant for the k3s sidecar and unauthenticated like every `/_floci-oci` endpoint, at `/_floci-oci/oke/token-webhook/<tenancy>/<cluster>`, the same design as floci-aws EKS).
-- **What the webhook checks**: the token must be the signed `https://containerengine.<region>.oraclecloud.com/cluster_request/<cluster-ocid>` URL `generate-token` builds, for this cluster and its region, with an `rsa-sha256` Signature over `date (request-target) host`, a keyId in the cluster's tenancy, and a date within 5 minutes. Like every floci-oci request, the RSA signature itself is **not verified**.
-- **Who the caller becomes**: the Kubernetes username and uid are the caller's user OCID, and the groups are `system:masters` and `system:authenticated`, so any accepted caller is cluster-admin. Only a caller whose key belongs to the cluster's own tenancy is accepted, the same rule floci-aws applies to EKS. Real OKE evaluates IAM policy and leaves the rest to Kubernetes RBAC; floci-oci stores policy statements but never evaluates them, so a narrower default would leave every caller unable to do anything.
-- **Token lifetime**: floci-oci accepts a token whose date is within 5 minutes of now. No Oracle source states OKE's server-side lifetime. `generate-token` itself tells kubectl to refresh after 4 minutes ("before the token is actually expired", oci-cli `containerengine_cli_extended.py`), so the 5 minutes is floci-oci's choice, just above that.
-- **Prerequisites for kubectl**: the `oci` CLI on `PATH` with a config whose key can sign (any key works, since signatures are not verified). Session auth works too: with `--auth security_token`, `generate-token` signs with a `ST$<token>` keyId, and floci-oci reads the caller from the token's `tenant` and `sub` claims without verifying it, as the OCI SDKs read them. The same applies to every floci-oci API, not only OKE.
+- **kubectl Authentication**: The kubeconfig is the real OKE token version `2.0.0` shape: its user runs `oci ce cluster generate-token --cluster-id <ocid> --region <region>`, and its cluster entry carries the k3s CA, so TLS is verified. k3s does not know these tokens, so it sends each one to floci-oci in a Kubernetes `TokenReview` (a token webhook meant for the k3s sidecar and unauthenticated like every `/_floci-oci` endpoint, at `/_floci-oci/oke/token-webhook/<tenancy>/<cluster>`, the same design as floci-aws EKS). The API server caches each verdict for 30 seconds.
+- **What a token is**: `generate-token` signs a bare `GET https://containerengine.<region>.oraclecloud.com/cluster_request/<cluster-ocid>` with the caller's OCI signer over `date (request-target) host`, copies the `authorization` and `date` headers into the URL's query and base64url-encodes the URL (oci-cli [`containerengine_cli_extended.py`][cli-token], oci-python-sdk `signer.py`). The query is not part of what was signed.
+- **What every mode checks**: the token must be that URL for this cluster and its region, with an `rsa-sha256` Signature over `date (request-target) host`, a keyId (or, for a session token, a `tenant` claim) in the cluster's tenancy, and a date within 5 minutes of now ("If the client's clock is skewed more than 5 minutes, a 401 (NotAuthenticated) HTTP status code is returned", [Request Signatures][signing]).
+- **Signature verification** (`FLOCI_OCI_SERVICES_OKE_TOKEN_VERIFICATION`):
+
+| Token signed with | `known-keys` (default) | `strict` | `off` |
+|---|---|---|---|
+| an API key uploaded to identity (`UploadApiKey`, Terraform `oci_identity_api_key`) | signature verified against the key; the caller mapped as OKE maps IAM users (below); a bad signature is `401` | same | not verified; cluster-admin |
+| another key of a user who has uploaded keys | `401` (OCI would not know the key) | `401` | not verified; cluster-admin |
+| a key of a user with no uploaded key | not verified; cluster-admin, as before; a WARN once per key says how to change that | `401` | not verified; cluster-admin |
+| `--auth security_token` (`ST$<jwt>` keyId) for a user that exists in identity, with a `jwk` claim | signature verified against the session key in `jwk` (proof the caller holds it), then mapped as OKE does; the JWT's own signature cannot be checked, since floci-oci issues no session tokens | `401` | not verified; cluster-admin |
+| any other session token, and instance principal tokens (`ptype: instance`) | not verified; cluster-admin, username the token's `sub` (the instance OCID for an instance principal) | `401` | not verified; cluster-admin |
+
+- **Who a verified caller becomes**: as OKE documents it ("A user's permissions to access clusters comes from the IAM groups ... to which they belong", "You can use OCIDs to map Kubernetes RBAC rolebindings and clusterrolebindings to IAM users and groups", "By default, users are not assigned any Kubernetes RBAC roles", [About Access Control and Kubernetes Engine][access-control]): the username and uid are the user's OCID, and the groups are the OCIDs of the user's IAM groups in the cluster's tenancy, then `system:authenticated`. A caller who holds `manage` on clusters where the cluster is also gets `system:masters` ("Oracle Cloud Infrastructure tenancy administrators already have sufficient privileges, and do not require the cluster-admin clusterrole", same page; `AdministerK8s` needs `CLUSTER_MANAGE`, [Container Engine policy reference][policy-ref]). That holds for a member of the tenancy's group named `Administrators`, or of a group that a policy of the cluster's tenancy lets `manage clusters`, `manage cluster-family` or `manage all-resources` in the cluster's compartment, one above it, or the tenancy. Anyone else has only what RBAC binds to `User <user OCID>` or `Group <group OCID>`, for example `kubectl create rolebinding devs-view --clusterrole=view --group=<group OCID>`. Verified callers also carry the `extra` fields seen on real clusters: `AuthType=[Native]`, `ContextType=[OCI]`, `Principal=[<OCID>]`, `TenancyID=[<OCID>]`, `TokenV2=[true]`.
+- **Becoming cluster-admin after uploading a key**: floci-oci's default tenancy has no `Administrators` group (every real tenancy has one; floci-oci creates it only for child tenancies, through `CreateChildTenancy`). So a user who uploads its key goes from cluster-admin to `403` on everything, as a real non-administrator would, until it joins a group named `Administrators` (create it) or one of its groups gets a policy such as `Allow group <name> to manage cluster-family in tenancy`. floci-oci logs this the first time a verified user is not an administrator.
+- **How policies are read**: only `Allow <subject> to manage <clusters | cluster-family | all-resources> in <location>` statements count, where the subject is `group <name>[, <name>]`, `group id <ocid>[, id <ocid>]`, `group '<domain>'/'<name>'` (the `Default` domain only), `any-group` or `any-user`, and the location is `tenancy` (in a policy attached to the tenancy), `compartment id <ocid>`, or `compartment <name>[:<name>]` resolved from the compartment the policy is attached to ([Policy Syntax][policy-syntax], [Policies and Compartment Hierarchies][policies]). Group and compartment names match ignoring case. A statement with a `where` clause never grants, nor does any other form floci-oci cannot evaluate (`Endorse`, `Admit`, permission lists, dynamic groups), so a policy can only make floci-oci stricter than OKE, never looser. Policies of other tenancies are never read, as only callers from the cluster's own tenancy are accepted.
 - **Static token alternative**: Each cluster also gets a random API token, stored with the cluster and never returned by `CreateCluster`, `GetCluster` or `ListClusters`. Set `FLOCI_OCI_SERVICES_OKE_KUBECONFIG_AUTH=token` to receive it in the kubeconfig instead of the `exec` user, for clients without the oci CLI. It is cluster-admin on that cluster.
+- **Prerequisites for kubectl**: the `oci` CLI on `PATH` with a config whose key can sign. With `known-keys`, any key works until it is uploaded; with `strict`, upload it first (`oci iam user api-key upload --user-id <ocid> --key-file <public.pem>`).
+- **Not verified against real OKE**: OKE's token webhook is closed source and no Oracle page describes its algorithm. That it is OCI's standard signed-request check on `GET /cluster_request/<cluster>` is an inference from the token's shape; OKE's accepted clock window and whether it caches verdicts are not documented, so the 5 minutes is OCI's generic limit (`generate-token` refreshes after 4). The group list (`system:masters` for `manage clusters` holders, the order of the entries) and the `extra` keys come from third-party `kubectl auth whoami` output, not Oracle documentation. Whether OKE lists dynamic group OCIDs for users, and whether instance principal tokens carry a `jwk` claim, is not known.
 
 ### Persistence, mock mode and teardown
 
@@ -143,6 +156,8 @@ In persistent, hybrid or wal storage modes, floci-oci restores every stored clus
 
 ## What floci-oci decides where Oracle is silent
 
+- How a token is verified (OCI's signed-request check, inferred), the 5-minute window, and which callers are verified in each `token-verification` mode.
+
 - Error codes for an invalid `initialNodeLabels` entry, an invalid or overlapping `kubernetesNetworkConfig`, a node pool on a cluster that is not `ACTIVE`, an unknown, duplicate or dependent add-on, and add-ons on a basic cluster.
 - The default memory per OCPU of a flexible shape when `nodeShapeConfig` sets only the OCPUs, and the size of a shape outside the catalog.
 - `INSTANCE_REPLACE` as the default cycle mode, and replacing every node at once.
@@ -151,6 +166,11 @@ In persistent, hybrid or wal storage modes, floci-oci restores every stored clus
 
 ## Sources
 
+- [Request Signatures](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/signingrequests.htm) and [Required Keys and OCIDs](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/apisigningkey.htm)
+- [About Access Control and Kubernetes Engine](https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengaboutaccesscontrol.htm)
+- [Policy Configuration for Cluster Creation and Deployment / Container Engine policy reference](https://docs.oracle.com/en-us/iaas/Content/Identity/Reference/contengpolicyreference.htm)
+- [Policy Syntax](https://docs.oracle.com/en-us/iaas/Content/Identity/Concepts/policysyntax.htm) and [How Policies Work](https://docs.oracle.com/en-us/iaas/Content/Identity/Concepts/policies.htm)
+- oci-cli `containerengine_cli_extended.py` (how `generate-token` builds the token)
 - [Supported Versions of Kubernetes](https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengaboutk8sversions.htm)
 - [Kubernetes Versions and Kubernetes Engine (OKE)](https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengupgradeoverview.htm)
 - [Upgrading the Kubernetes version on control plane nodes](https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengupgradingk8smasternode.htm)
@@ -170,6 +190,12 @@ In persistent, hybrid or wal storage modes, floci-oci restores every stored clus
 - oci-go-sdk `containerengine` and `core` (wire shapes, `KubernetesNetworkConfig` defaults, `core.Instance.Region`), oracle/oci-cloud-controller-manager at `93969b5` (provider ID, zone and region, instance type, compartment annotation, storage class manifests).
 
 [versions]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengaboutk8sversions.htm
+[signing]: https://docs.oracle.com/en-us/iaas/Content/API/Concepts/signingrequests.htm
+[access-control]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengaboutaccesscontrol.htm
+[policy-ref]: https://docs.oracle.com/en-us/iaas/Content/Identity/Reference/contengpolicyreference.htm
+[policy-syntax]: https://docs.oracle.com/en-us/iaas/Content/Identity/Concepts/policysyntax.htm
+[policies]: https://docs.oracle.com/en-us/iaas/Content/Identity/Concepts/policies.htm
+[cli-token]: https://github.com/oracle/oci-cli/blob/b9333bdcdcabdd10b8a4ef340ab4ebfc1d5cf5ae/services/container_engine/src/oci_cli_container_engine/containerengine_cli_extended.py#L30-L90
 [upgrade-overview]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengupgradeoverview.htm
 [upgrade-cp]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengupgradingk8smasternode.htm
 [upgrade-nodes]: https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengupgradingk8sworkernode.htm
