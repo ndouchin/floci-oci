@@ -31,7 +31,7 @@ It implements real OCI wire protocols so the official OCI SDKs, the OCI CLI, Ter
 | Vault, KMS & Secrets | `/20180608/…`, `/20190301/…` | Vaults, keys, real AES-GCM/RSA/ECDSA crypto, secrets and bundles |
 | Streaming | `/20180418/…` | Streams, partitions, cursors, consumer groups |
 | Functions | `/20260325/…`, `/20181201/…` | Applications, functions, real invocation via an Fn Project sidecar |
-| Container Engine for Kubernetes (OKE) | `/20180222/…` | Clusters, node pools, options, kubeconfig generation, work requests, real k3s sidecar |
+| Container Engine for Kubernetes (OKE) | `/20180222/…` | Clusters, node pools, add-ons, options, kubeconfig generation, work requests, real k3s control plane and worker nodes |
 | Database with PostgreSQL | `/20220915/…` | DB systems, start/stop/restart, password reset, connection details, shapes, default and custom configurations, backups and restore, instances and replicas, Kerberos and insight settings, work requests, real PostgreSQL sidecar |
 | Organizations | `/20230401/…` | Child tenancies, organizations, organization tenancies, links, invitations, domains, subscriptions, orders, work requests |
 | Governance Rules | `/20220504/…` | Governance rules, inclusion criteria, tenancy attachments, enforced rules, work requests |
