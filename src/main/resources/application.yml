@@ -124,6 +124,11 @@ floci-oci:
       endpoint-mode: host    # host = https://127.0.0.1:<hostPort>; network = sidecar container name (floci-oci in a container)
       ready-timeout-seconds: 300
       token-verification: known-keys  # known-keys = verify tokens signed with uploaded API keys; strict = only those; off = never verify
+      load-balancer:
+        mode: emulated                # emulated = OCI-shaped addresses held by appliances; servicelb = k3s servicelb; off = pending
+        provisioning-delay-seconds: 0
+        public-cidr: 192.0.2.0/24     # public addresses, shared by every cluster (RFC 5737 TEST-NET-1)
+        host-ports: dynamic           # dynamic | same-as-service | none, on 127.0.0.1 of the Docker host
     psql:
       enabled: true
       mock: false            # true = no Docker; DB systems are management-plane only

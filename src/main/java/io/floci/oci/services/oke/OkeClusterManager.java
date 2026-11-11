@@ -69,6 +69,8 @@ public class OkeClusterManager implements Resettable {
     static final String CLUSTER_LABEL = "floci_oke_cluster";
     static final String NODE_POOL_LABEL = "floci_oke_node_pool";
     static final String NODE_VOLUME_LABEL = "floci_oke_node_volume";
+    /** The load balancer mode a server was created with, for whoever inspects it. */
+    static final String LOAD_BALANCER_MODE_LABEL = "io.floci.load-balancer-mode";
     private static final Duration KUBECTL_TIMEOUT = Duration.ofSeconds(30);
     private static final ObjectMapper JSON = new ObjectMapper();
     /** The third octets tried for a cluster's {@code 10.0.X.0/24} node network, from OKE's usual worker subnet up. */
@@ -197,6 +199,7 @@ public class OkeClusterManager implements Resettable {
                         .withLabels(ContainerStorageHelper.resourceIdentityLabels(
                                 "oke", cluster.getId(), cluster.getCompartmentId(), clusterRegion(cluster)))
                         .withLabel(CLUSTER_LABEL, cluster.getId())
+                        .withLabel(LOAD_BALANCER_MODE_LABEL, OkeLoadBalancerMode.of(cluster).value())
                         .build();
 
                 lifecycleManager.createAndStart(spec);
@@ -314,11 +317,13 @@ public class OkeClusterManager implements Resettable {
      * and service networks come from the cluster's {@code kubernetesNetworkConfig}, and each node takes a
      * {@code /25} of the pod network, as OKE allocates with flannel. metrics-server is
      * an optional OKE add-on, not deployed by default, so k3s's bundled one stays off; installing the
-     * {@code KubernetesMetricsServer} add-on deploys it.
+     * {@code KubernetesMetricsServer} add-on deploys it. Unless the cluster keeps k3s's servicelb
+     * ({@link OkeLoadBalancerMode}), it is off: servicelb rewrites every LoadBalancer Service's status
+     * from its own pods, so it cannot share that status with floci-oci's load balancer controller.
      */
     static List<String> buildServerArgs(StoredOkeCluster cluster) {
         OkeNetwork.Cidrs cidrs = OkeNetwork.of(cluster.getOptions());
-        return List.of("server",
+        List<String> args = new ArrayList<>(List.of("server",
                 "--disable-agent",
                 "--egress-selector-mode=cluster",
                 "--cluster-cidr=" + cidrs.pods(),
@@ -327,11 +332,16 @@ public class OkeClusterManager implements Resettable {
                 "--kube-controller-manager-arg=node-cidr-mask-size=" + OkeNetwork.NODE_PODS_PREFIX,
                 "--disable=traefik",
                 "--disable=local-storage",
-                "--disable=metrics-server",
+                "--disable=metrics-server"));
+        if (OkeLoadBalancerMode.of(cluster) != OkeLoadBalancerMode.SERVICELB) {
+            args.add("--disable=servicelb");
+        }
+        args.addAll(List.of(
                 "--kube-apiserver-arg=token-auth-file=" + TOKEN_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-config-file=" + WEBHOOK_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-version=v1",
-                "--kube-apiserver-arg=authentication-token-webhook-cache-ttl=30s");
+                "--kube-apiserver-arg=authentication-token-webhook-cache-ttl=30s"));
+        return List.copyOf(args);
     }
 
     /**

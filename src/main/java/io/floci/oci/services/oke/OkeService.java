@@ -156,6 +156,7 @@ public class OkeService implements Resettable, CompartmentUsage {
             OkeKubeconfigGenerator.validateAuthMode(config.services().oke().kubeconfigAuth());
             OkeClusterManager.validateEndpointMode(config.services().oke().endpointMode());
             OkeTokenVerification.parse(config.services().oke().tokenVerification());
+            OkeLoadBalancerMode.parse(config.services().oke().loadBalancer().mode());
         }
         if (serviceRegistry != null) {
             serviceRegistry.register(ServiceDescriptor.builder("oke")
@@ -501,6 +502,7 @@ public class OkeService implements Resettable, CompartmentUsage {
         cluster.setRegion(ociContext.region());
 
         if (realMode()) {
+            cluster.setLoadBalancerMode(OkeLoadBalancerMode.parse(config.services().oke().loadBalancer().mode()).value());
             clusterManager.startCluster(cluster);
         } else {
             cluster.setEndpoints(MOCK_ENDPOINTS);

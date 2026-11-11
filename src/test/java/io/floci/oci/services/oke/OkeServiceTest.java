@@ -86,6 +86,24 @@ class OkeServiceTest {
     }
 
     @Test
+    void aRealModeClusterRecordsTheConfiguredLoadBalancerMode() {
+        EmulatorConfig config = mock(EmulatorConfig.class, RETURNS_DEEP_STUBS);
+        lenient().when(config.defaultRealm()).thenReturn("oc1");
+        lenient().when(config.defaultRegion()).thenReturn("us-ashburn-1");
+        lenient().when(config.services().oke().mock()).thenReturn(false);
+        lenient().when(config.services().oke().loadBalancer().mode()).thenReturn("off");
+        OkeClusterManager manager = mock(OkeClusterManager.class);
+        OkeService real = new OkeService(new InMemoryStorage<>(), new InMemoryStorage<>(), config, null,
+                mock(WorkRequestService.class), manager);
+
+        StoredOkeCluster cluster = real.createCluster(COMPARTMENT, "lb-mode", VCN, OkeVersions.DEFAULT_VERSION,
+                null, null, null).cluster();
+
+        assertEquals("off", cluster.getLoadBalancerMode());
+        verify(manager).startCluster(argThat(started -> "off".equals(started.getLoadBalancerMode())));
+    }
+
+    @Test
     void ocidUsesMappedRegionShortCode() {
         OkeService.CreateClusterResult res = service.createCluster(COMPARTMENT, "region-cluster", VCN, OkeVersions.DEFAULT_VERSION, null, null, null);
         assertTrue(res.cluster().getId().startsWith("ocid1.cluster.oc1.iad."));
@@ -477,6 +495,7 @@ class OkeServiceTest {
         lenient().when(realConfig.services().oke().mock()).thenReturn(false);
         lenient().when(realConfig.services().oke().readyTimeoutSeconds()).thenReturn(300);
         lenient().when(realConfig.services().oke().maxNodesPerCluster()).thenReturn(3);
+        lenient().when(realConfig.services().oke().loadBalancer().mode()).thenReturn("emulated");
         readinessManager = mock(OkeClusterManager.class);
         realWorkRequests = new WorkRequestService(new InMemoryStorage<>(), realConfig);
         clock = new MutableClock(Instant.parse("2026-10-01T12:00:00Z"));
