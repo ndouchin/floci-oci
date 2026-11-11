@@ -9,6 +9,8 @@ import io.floci.oci.core.common.docker.ContainerStorageHelper;
 import io.floci.oci.core.common.docker.CurrentContainerNetworkResolver;
 import io.floci.oci.core.common.docker.DockerHostResolver;
 import io.floci.oci.core.common.docker.PortAllocator;
+import io.floci.oci.services.oke.model.StoredNode;
+import io.floci.oci.services.oke.model.StoredNodePool;
 import io.floci.oci.services.oke.model.StoredOkeCluster;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -75,7 +77,9 @@ class OkeClusterManagerTest {
         lenient().when(config.services().oke().mock()).thenReturn(false);
         lenient().when(config.services().oke().apiServerBasePort()).thenReturn(6443);
         lenient().when(config.services().oke().apiServerMaxPort()).thenReturn(6543);
-        lenient().when(config.services().oke().defaultImage()).thenReturn("rancher/k3s:v1.30.1-k3s1");
+        lenient().when(config.services().oke().imageRepository()).thenReturn("rancher/k3s");
+        lenient().when(containerBuilder.resolveImage(anyString())).thenAnswer(invocation -> invocation.getArgument(0));
+        lenient().when(lifecycleManager.containerImage(anyString())).thenReturn("rancher/k3s:v1.30.1-k3s1");
         lenient().when(config.storage().mode()).thenReturn("memory");
         lenient().when(config.storage().pruneVolumesOnDelete()).thenReturn(true);
         lenient().when(config.defaultRegion()).thenReturn("us-ashburn-1");
@@ -93,6 +97,9 @@ class OkeClusterManagerTest {
         lenient().when(specBuilder.withPrivileged(org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(specBuilder);
         lenient().when(specBuilder.withLabels(any())).thenReturn(specBuilder);
         lenient().when(specBuilder.withDockerNetwork(any())).thenReturn(specBuilder);
+        lenient().when(specBuilder.withPrimaryNetwork(anyString())).thenReturn(specBuilder);
+        lenient().when(specBuilder.withLabel(anyString(), anyString())).thenReturn(specBuilder);
+        lenient().when(lifecycleManager.networkSubnet(anyString())).thenReturn(Optional.of("10.0.10.0/24"));
         lenient().when(specBuilder.withHostDockerInternalOnLinux()).thenReturn(specBuilder);
         lenient().when(specBuilder.build()).thenReturn(new ContainerSpec("rancher/k3s:v1.30.1-k3s1"));
 
@@ -385,18 +392,151 @@ class OkeClusterManagerTest {
         manager.startCluster(cluster);
 
         verify(specBuilder).withEntrypoint(OkeClusterManager.K3S_ENTRYPOINT);
-        verify(specBuilder).withCmd(List.of("k3s", "server", "--disable=traefik",
+        verify(specBuilder).withCmd(List.of("k3s", "server", "--disable-agent", "--egress-selector-mode=cluster",
+                "--cluster-cidr=10.244.0.0/16", "--service-cidr=10.96.0.0/16", "--cluster-dns=10.96.5.5",
+                "--kube-controller-manager-arg=node-cidr-mask-size=25",
+                "--disable=traefik", "--disable=local-storage", "--disable=metrics-server",
                 "--kube-apiserver-arg=token-auth-file=" + OkeClusterManager.TOKEN_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-config-file=" + OkeClusterManager.WEBHOOK_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-version=v1",
                 "--kube-apiserver-arg=authentication-token-webhook-cache-ttl=30s"));
         verify(specBuilder).withEnv(OkeClusterManager.API_TOKEN_ENV, "token-servermode001");
+        verify(specBuilder).withEnv(OkeClusterManager.MANIFESTS_ENV, OkeManifests.clusterManifests());
         verify(specBuilder).withEnv(OkeClusterManager.WEBHOOK_KUBECONFIG_ENV, manager.webhookKubeconfig(cluster));
         verify(specBuilder).withEnv(OkeClusterManager.TLS_SAN_ENV,
                 ContainerStorageHelper.dockerName(config, "oke-" + cluster.getId()));
+        verify(specBuilder).withPrimaryNetwork(ContainerStorageHelper.dockerName(config, "oke-net-" + cluster.getId()));
         verify(specBuilder).withDockerNetwork(Optional.empty());
         verify(specBuilder).withHostDockerInternalOnLinux();
         assertNull(cluster.getLifecycleState(), "real mode leaves ACTIVE to the readiness poller");
+    }
+
+    private StoredNodePool agentPool(String shape) {
+        StoredNodePool pool = new StoredNodePool();
+        pool.setId("ocid1.nodepool.oc1.iad.agentpool");
+        pool.setName("agents");
+        pool.setCompartmentId("ocid1.compartment.oc1..agents");
+        pool.setNodeShape(shape);
+        return pool;
+    }
+
+    private StoredNode agentNode() {
+        StoredNode node = new StoredNode();
+        node.setId("ocid1.instance.oc1.iad.agentnode");
+        node.setName("oke-cagent-nagent-sagent-0");
+        node.setPrivateIp("10.0.10.16");
+        node.setAvailabilityDomain("Floc:US-ASHBURN-AD-1");
+        node.setFaultDomain("FAULT-DOMAIN-1");
+        node.setKubernetesVersion("v1.35.2");
+        return node;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> agentArgs(String shape) {
+        lenient().when(specBuilder.withIpv4Address(anyString())).thenReturn(specBuilder);
+        lenient().when(specBuilder.withNamedVolume(anyString(), anyString())).thenReturn(specBuilder);
+        lenient().when(specBuilder.withLogRotation()).thenReturn(specBuilder);
+        lenient().when(specBuilder.withMemoryBytes(org.mockito.ArgumentMatchers.anyLong())).thenReturn(specBuilder);
+        lenient().when(specBuilder.withNanoCpus(org.mockito.ArgumentMatchers.anyLong())).thenReturn(specBuilder);
+        lenient().when(lifecycleManager.exec(anyString(), any(), anyList(), any()))
+                .thenReturn(new ContainerLifecycleManager.ExecResult(0, "", ""));
+        lenient().when(lifecycleManager.hostResources())
+                .thenReturn(Optional.of(new ContainerLifecycleManager.HostResources(6, 10L << 30)));
+        StoredOkeCluster cluster = adoptableCluster("ocid1.cluster.oc1.iad.agents001");
+        cluster.setJoinToken("K10hash::server:secret");
+
+        assertTrue(manager.ensureNode(cluster, agentPool(shape), agentNode()));
+
+        ArgumentCaptor<List<String>> cmd = ArgumentCaptor.forClass(List.class);
+        verify(specBuilder).withCmd(cmd.capture());
+        verify(specBuilder).withEnv("K3S_TOKEN", "K10hash::server:secret");
+        verify(specBuilder).withEnv("K3S_URL", "https://" + containerName(cluster) + ":6443");
+        verify(specBuilder).withPrimaryNetwork(ContainerStorageHelper.dockerName(config, "oke-net-" + cluster.getId()));
+        verify(specBuilder).withIpv4Address("10.0.10.16");
+        return cmd.getValue();
+    }
+
+    @Test
+    void anAgentRegistersUnderItsAddressWithAnOciProviderIdAndOkeLabels() {
+        List<String> args = agentArgs("VM.Standard.E4.Flex");
+
+        assertEquals("agent", args.getFirst());
+        assertTrue(args.contains("--node-name=10.0.10.16"));
+        assertTrue(args.contains("--kubelet-arg=provider-id=oci://ocid1.instance.oc1.iad.agentnode"));
+        assertTrue(args.contains("--node-label=node.kubernetes.io/instance-type=VM.Standard.E4.Flex"));
+        assertTrue(args.contains("--node-label=topology.kubernetes.io/zone=US-ASHBURN-AD-1"));
+        assertTrue(args.contains("--kubelet-arg=system-reserved=cpu=4000m"), args.toString());
+        assertFalse(args.stream().anyMatch(arg -> arg.startsWith("--node-taint")));
+        verify(specBuilder).withNanoCpus(2_000_000_000L);
+    }
+
+    @Test
+    void removingANodeStopsItsAgentBeforeDeletingItsKubernetesNode() {
+        StoredOkeCluster cluster = adoptableCluster("ocid1.cluster.oc1.iad.removal001");
+        when(lifecycleManager.isContainerRunning(containerName(cluster))).thenReturn(true);
+        when(lifecycleManager.exec(anyString(), any(), anyList(), any()))
+                .thenReturn(new ContainerLifecycleManager.ExecResult(0, "", ""));
+        StoredNode node = agentNode();
+
+        manager.removeNode(cluster, node, true);
+
+        InOrder order = inOrder(lifecycleManager);
+        order.verify(lifecycleManager).removeIfExists(manager.nodeContainerName(node));
+        order.verify(lifecycleManager).exec(eq(containerName(cluster)), any(),
+                eq(List.of("kubectl", "delete", "node", "10.0.10.16", "--ignore-not-found", "--wait=false")), any());
+        verify(lifecycleManager).removeVolume(manager.nodeVolumeName(node));
+    }
+
+    @Test
+    void aNodeIsFinishedOnlyOnceItsKubeletRunsTheNodesVersion() {
+        StoredOkeCluster cluster = adoptableCluster("ocid1.cluster.oc1.iad.finish001");
+        StoredNode node = agentNode();
+        List<String> getVersion = List.of("kubectl", "get", "node", "10.0.10.16", "-o",
+                "jsonpath={.status.nodeInfo.kubeletVersion}");
+        lenient().when(lifecycleManager.exec(anyString(), any(), anyList(), any()))
+                .thenReturn(new ContainerLifecycleManager.ExecResult(0, "", ""));
+        when(lifecycleManager.exec(eq(containerName(cluster)), any(), eq(getVersion), any()))
+                .thenReturn(new ContainerLifecycleManager.ExecResult(0, "v1.34.10+k3s1", ""))
+                .thenReturn(new ContainerLifecycleManager.ExecResult(0, "v1.35.2+k3s1", ""));
+
+        assertFalse(manager.finishNode(cluster, agentPool("VM.Standard.E4.Flex"), node),
+                "the Node object still belongs to the kubelet the node ran before");
+        verify(lifecycleManager, never()).exec(anyString(), any(),
+                org.mockito.ArgumentMatchers.argThat(cmd -> cmd.contains("label")), any());
+        assertTrue(manager.finishNode(cluster, agentPool("VM.Standard.E4.Flex"), node));
+    }
+
+    @Test
+    void agentsOfNodesNoLongerInTheClusterAreRemovedWithTheirVolumes() {
+        StoredOkeCluster cluster = adoptableCluster("ocid1.cluster.oc1.iad.orphans001");
+        com.github.dockerjava.api.model.Container kept = mock(com.github.dockerjava.api.model.Container.class);
+        lenient().when(kept.getId()).thenReturn("kept-id");
+        when(kept.getLabels()).thenReturn(Map.of(ContainerStorageHelper.RESOURCE_ID_LABEL, "ocid1.instance.oc1.iad.kept",
+                OkeClusterManager.NODE_VOLUME_LABEL, "kept-volume"));
+        com.github.dockerjava.api.model.Container orphan = mock(com.github.dockerjava.api.model.Container.class);
+        when(orphan.getId()).thenReturn("orphan-id");
+        when(orphan.getLabels()).thenReturn(Map.of(ContainerStorageHelper.RESOURCE_ID_LABEL,
+                "ocid1.instance.oc1.iad.gone", OkeClusterManager.NODE_VOLUME_LABEL, "orphan-volume"));
+        com.github.dockerjava.api.model.Container serverContainer = mock(com.github.dockerjava.api.model.Container.class);
+        when(serverContainer.getLabels()).thenReturn(Map.of(ContainerStorageHelper.RESOURCE_ID_LABEL, cluster.getId()));
+        when(lifecycleManager.listByLabel(OkeClusterManager.CLUSTER_LABEL, cluster.getId()))
+                .thenReturn(List.of(kept, orphan, serverContainer));
+
+        manager.removeOrphanAgents(cluster, java.util.Set.of("ocid1.instance.oc1.iad.kept"));
+
+        verify(lifecycleManager).removeIfExists("orphan-id");
+        verify(lifecycleManager).removeVolume("orphan-volume");
+        verify(lifecycleManager, never()).removeIfExists("kept-id");
+        verify(lifecycleManager, never()).removeVolume("kept-volume");
+        String server = containerName(cluster);
+        verify(lifecycleManager, never()).removeIfExists(server);
+    }
+
+    @Test
+    void aGpuShapeAgentCarriesOkesGpuTaint() {
+        List<String> args = agentArgs("VM.GPU.A10.1");
+
+        assertTrue(args.contains("--node-taint=nvidia.com/gpu=present:NoSchedule"));
     }
 
     @Test
@@ -407,6 +547,7 @@ class OkeClusterManagerTest {
         assertTrue(script.contains("\"$" + OkeClusterManager.WEBHOOK_KUBECONFIG_ENV + "\" > "
                 + OkeClusterManager.WEBHOOK_FILE));
         assertTrue(script.contains("system:masters"));
+        assertTrue(script.contains("\"$" + OkeClusterManager.MANIFESTS_ENV + "\" > " + OkeClusterManager.MANIFEST_FILE));
         assertTrue(script.endsWith("exec /bin/k3s \"$@\" --tls-san=\"$" + OkeClusterManager.TLS_SAN_ENV + "\""));
     }
 
@@ -493,13 +634,29 @@ class OkeClusterManagerTest {
         when(lifecycleManager.containerEnv(anyString())).thenReturn(List.of(
                 OkeClusterManager.API_TOKEN_ENV + "=" + cluster.getApiToken(),
                 OkeClusterManager.WEBHOOK_KUBECONFIG_ENV + "=" + webhookKubeconfig,
-                OkeClusterManager.TLS_SAN_ENV + "=" + tlsSan));
+                OkeClusterManager.TLS_SAN_ENV + "=" + tlsSan,
+                OkeClusterManager.SERVER_ARGS_ENV + "=" + String.join(" ", OkeClusterManager.buildServerArgs(cluster)),
+                OkeClusterManager.MANIFESTS_ENV + "=" + OkeManifests.clusterManifests()));
         when(lifecycleManager.containerLabels(anyString())).thenReturn(
                 Map.of(ContainerStorageHelper.REGION_LABEL, "us-ashburn-1"));
 
         manager.startCluster(cluster);
 
         verify(lifecycleManager, never()).createAndStart(any());
+    }
+
+    @Test
+    void startClusterRecreatesARunningSidecarOnAnotherVersionsImage() {
+        StoredOkeCluster cluster = adoptableCluster("ocid1.cluster.oc1.iad.adopt004");
+        cluster.setKubernetesVersion("v1.36.4");
+        when(lifecycleManager.isContainerRunning(anyString())).thenReturn(true);
+        when(lifecycleManager.containerImage(anyString())).thenReturn("rancher/k3s:v1.35.2-k3s1");
+        when(lifecycleManager.createAndStart(any())).thenReturn(new ContainerLifecycleManager.ContainerInfo("c-new", Map.of()));
+
+        manager.startCluster(cluster);
+
+        verify(containerBuilder).newContainer("rancher/k3s:v1.36.4-k3s1");
+        verify(lifecycleManager).createAndStart(any());
     }
 
     @Test
@@ -512,7 +669,9 @@ class OkeClusterManagerTest {
         when(lifecycleManager.containerEnv(anyString())).thenReturn(List.of(
                 OkeClusterManager.API_TOKEN_ENV + "=" + cluster.getApiToken(),
                 OkeClusterManager.WEBHOOK_KUBECONFIG_ENV + "=" + webhookKubeconfig,
-                OkeClusterManager.TLS_SAN_ENV + "=" + tlsSan));
+                OkeClusterManager.TLS_SAN_ENV + "=" + tlsSan,
+                OkeClusterManager.SERVER_ARGS_ENV + "=" + String.join(" ", OkeClusterManager.buildServerArgs(cluster)),
+                OkeClusterManager.MANIFESTS_ENV + "=" + OkeManifests.clusterManifests()));
         when(lifecycleManager.containerLabels(anyString())).thenReturn(
                 Map.of(ContainerStorageHelper.REGION_LABEL, "us-ashburn-1"));
         when(lifecycleManager.createAndStart(any())).thenReturn(new ContainerLifecycleManager.ContainerInfo("c-new", Map.of()));
@@ -680,8 +839,11 @@ class OkeClusterManagerTest {
                         "io.floci.service", "oke",
                         "io.floci.resource-id", "ocid1.cluster.oc1.iad.labelled001",
                         "io.floci.compartment", "ocid1.compartment.oc1..labelled",
-                        "io.floci.region", "us-ashburn-1"),
+                        "io.floci.region", "us-ashburn-1",
+                        OkeClusterManager.CLUSTER_LABEL, "ocid1.cluster.oc1.iad.labelled001"),
                 spec.getValue().labels());
+        assertEquals(ContainerStorageHelper.dockerName(config, "oke-net-" + cluster.getId()),
+                spec.getValue().primaryNetwork(), "k3s must start on the cluster network to advertise an address on it");
     }
 
     @Test

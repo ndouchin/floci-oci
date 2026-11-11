@@ -15,6 +15,9 @@ import io.floci.oci.core.storage.StorageFactory;
 import io.floci.oci.core.storage.TenancyAwareStorageBackend;
 import io.floci.oci.core.workrequest.StoredWorkRequest;
 import io.floci.oci.core.workrequest.WorkRequestService;
+import io.floci.oci.services.identity.IdentityService;
+import io.floci.oci.services.oke.model.StoredAddon;
+import io.floci.oci.services.oke.model.StoredNode;
 import io.floci.oci.services.oke.model.StoredNodePool;
 import io.floci.oci.services.oke.model.StoredOkeCluster;
 import io.quarkus.runtime.StartupEvent;
@@ -29,9 +32,15 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -50,9 +59,16 @@ public class OkeService implements Resettable, CompartmentUsage {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final int API_TOKEN_BYTES = 32;
     private static final long READINESS_POLL_SECONDS = 3;
+    /** The endpoints a cluster without a k3s sidecar (mock mode) advertises. */
+    static final Map<String, String> MOCK_ENDPOINTS = Map.of(
+            "kubernetes", "https://127.0.0.1:6443",
+            "privateEndpoint", "10.0.0.10:6443");
 
-    /** A real-mode cluster still CREATING, with the tenancy that owns it and when it started. */
-    record PendingCluster(String tenancyId, Instant since) {}
+    /**
+     * A real-mode cluster still CREATING or UPDATING, with the tenancy that owns it, when its k3s
+     * server started and the work request that finishes with it.
+     */
+    record PendingCluster(String tenancyId, Instant since, String workRequestId) {}
 
     /** A stored cluster together with the tenancy whose partition it lives in. */
     private record OwnedCluster(String tenancyId, StoredOkeCluster cluster) {}
@@ -64,15 +80,22 @@ public class OkeService implements Resettable, CompartmentUsage {
     private final ServiceRegistry serviceRegistry;
     private final WorkRequestService workRequests;
     private final OkeClusterManager clusterManager;
+    private final IdentityService identity;
     private final Supplier<String> tenancyId;
     private final Clock clock;
     private final Map<String, PendingCluster> pendingClusters = new ConcurrentHashMap<>();
+    /** Clusters whose agents the poller still has to bring in line with their node pools, by owning tenancy. */
+    private final Map<String, String> reconcileQueue = new ConcurrentHashMap<>();
+    /** Nodes whose agent joined and got OKE's post-join labels in this process. */
+    private final Set<String> finishedNodes = ConcurrentHashMap.newKeySet();
+    private final Map<String, String> capWarnings = new ConcurrentHashMap<>();
+    private final Map<String, Instant> poolsPendingSince = new ConcurrentHashMap<>();
     private final ScheduledExecutorService readinessPoller;
 
     @Inject
     public OkeService(StorageFactory storageFactory, EmulatorConfig config,
                       ServiceRegistry serviceRegistry, WorkRequestService workRequests,
-                      OkeClusterManager clusterManager, OciContext ociContext) {
+                      OkeClusterManager clusterManager, OciContext ociContext, IdentityService identity) {
         this(
             storageFactory.create("oke", "oke-clusters.json",
                 new TypeReference<Map<String, StoredOkeCluster>>() {}),
@@ -84,7 +107,8 @@ public class OkeService implements Resettable, CompartmentUsage {
             clusterManager,
             ociContext::tenancyId,
             Clock.systemUTC(),
-            ociContext
+            ociContext,
+            identity
         );
     }
 
@@ -96,7 +120,7 @@ public class OkeService implements Resettable, CompartmentUsage {
                OkeClusterManager clusterManager) {
         this(clusters, nodePools, config, serviceRegistry, workRequests, clusterManager,
                 () -> config != null ? config.defaultTenancyId() : null, Clock.systemUTC(),
-                OciContext.fromConfig(config));
+                OciContext.fromConfig(config), null);
     }
 
     OkeService(StorageBackend<String, StoredOkeCluster> clusters,
@@ -107,8 +131,10 @@ public class OkeService implements Resettable, CompartmentUsage {
                OkeClusterManager clusterManager,
                Supplier<String> tenancyId,
                Clock clock,
-               OciContext ociContext) {
+               OciContext ociContext,
+               IdentityService identity) {
         this.ociContext = ociContext;
+        this.identity = identity;
         this.clusters = clusters;
         this.nodePools = nodePools;
         this.config = config;
@@ -150,6 +176,7 @@ public class OkeService implements Resettable, CompartmentUsage {
 
     void reconstructClusterState() {
         List<OwnedCluster> existingClusters = backfillInternalFields();
+        backfillNodePools();
         if (!realMode()) {
             return;
         }
@@ -158,12 +185,25 @@ public class OkeService implements Resettable, CompartmentUsage {
             if ("FAILED".equals(cluster.getLifecycleState())) {
                 continue;
             }
-            clusterManager.registerExistingCluster(cluster);
+            try {
+                clusterManager.registerExistingCluster(cluster);
+            } catch (RuntimeException e) {
+                LOG.errorv(e, "Could not restore the k3s server of OKE cluster {0}", cluster.getId());
+                cluster.setLifecycleState("FAILED");
+                cluster.setLifecycleDetails("The k3s server did not start after a restart: " + e.getMessage());
+                putCluster(owned.tenancyId(), cluster);
+                continue;
+            }
+            requestReconcile(cluster);
             if (cluster.getCaCertificate() == null || clusterManager.prunesVolumesOnStop()) {
-                // Shutdown removed the volume holding the k3s CA, so the new sidecar has a new one.
+                if (cluster.getCaCertificate() != null) {
+                    LOG.warnv("OKE cluster {0} restarts on a new k3s volume, so its CA changed: fetch its"
+                            + " kubeconfig again once it is ACTIVE", cluster.getId());
+                }
                 cluster.setCaCertificate(null);
                 cluster.setLifecycleState("CREATING");
-                pendingClusters.put(cluster.getId(), new PendingCluster(owned.tenancyId(), clock.instant()));
+                pendingClusters.put(cluster.getId(), new PendingCluster(owned.tenancyId(), clock.instant(),
+                        cluster.getCreateWorkRequestId()));
             }
             putCluster(owned.tenancyId(), cluster);
         }
@@ -194,6 +234,29 @@ public class OkeService implements Resettable, CompartmentUsage {
             }
         }
         return existingClusters;
+    }
+
+    /**
+     * Gives node pools stored by an older floci-oci the tenancy and region of the partition they
+     * live in, so the poller can write them back outside a request.
+     */
+    private void backfillNodePools() {
+        Map<String, Map<String, StoredNodePool>> partitions =
+                TenancyAwareStorageBackend.entriesByPartition(nodePools, null);
+        for (Map.Entry<String, Map<String, StoredNodePool>> partition : partitions.entrySet()) {
+            String name = partition.getKey();
+            String owner = name == null ? tenancyId.get() : TenancyAwareStorageBackend.tenancyOf(name);
+            String region = name == null
+                    ? defaultRegion()
+                    : TenancyAwareStorageBackend.regionOf(name).orElse(defaultRegion());
+            for (StoredNodePool pool : partition.getValue().values()) {
+                if (pool.getTenancyId() == null || pool.getRegion() == null) {
+                    pool.setTenancyId(owner);
+                    pool.setRegion(region);
+                    TenancyAwareStorageBackend.putIn(nodePools, partition.getKey(), pool.getId(), pool);
+                }
+            }
+        }
     }
 
     private boolean backfill(StoredOkeCluster cluster, String owner, String region) {
@@ -245,8 +308,8 @@ public class OkeService implements Resettable, CompartmentUsage {
             String clusterId = entry.getKey();
             PendingCluster pending = entry.getValue();
             Optional<StoredOkeCluster> found = findCluster(pending.tenancyId(), clusterId);
-            if (found.isEmpty() || !"CREATING".equals(found.get().getLifecycleState())) {
-                LOG.debugv("OKE cluster {0} is no longer CREATING in tenancy {1}; stop polling it",
+            if (found.isEmpty() || !isStarting(found.get())) {
+                LOG.debugv("OKE cluster {0} is no longer CREATING or UPDATING in tenancy {1}; stop polling it",
                         clusterId, pending.tenancyId());
                 pendingClusters.remove(clusterId);
                 continue;
@@ -257,19 +320,24 @@ public class OkeService implements Resettable, CompartmentUsage {
                 LOG.warnv(e, "OKE readiness poll failed for cluster {0}", clusterId);
             }
         }
+        reconcileQueued();
+    }
+
+    private static boolean isStarting(StoredOkeCluster cluster) {
+        return "CREATING".equals(cluster.getLifecycleState()) || "UPDATING".equals(cluster.getLifecycleState());
     }
 
     private void pollOne(PendingCluster pending, StoredOkeCluster cluster) {
         Optional<String> caCertificate = clusterManager.probeReady(cluster);
         if (caCertificate.isPresent()) {
             cluster.setCaCertificate(caCertificate.get());
-            finishCreate(pending.tenancyId(), cluster, "ACTIVE", "SUCCEEDED", null);
+            finishCreate(pending, cluster, "ACTIVE", "SUCCEEDED", null);
         } else if (!clusterManager.isClusterRunning(cluster)) {
-            finishCreate(pending.tenancyId(), cluster, "FAILED", "FAILED",
+            finishCreate(pending, cluster, "FAILED", "FAILED",
                     "The k3s sidecar exited before its API server became ready");
         } else if (clock.instant().isAfter(
                 pending.since().plusSeconds(config.services().oke().readyTimeoutSeconds()))) {
-            finishCreate(pending.tenancyId(), cluster, "FAILED", "FAILED",
+            finishCreate(pending, cluster, "FAILED", "FAILED",
                     "The k3s API server was not ready after "
                             + config.services().oke().readyTimeoutSeconds() + " seconds");
         }
@@ -280,20 +348,23 @@ public class OkeService implements Resettable, CompartmentUsage {
      * from {@link #pendingClusters}: a delete or reset that removed it during the probe wins, so
      * the poller never writes back a cluster that is gone.
      */
-    private void finishCreate(String owner, StoredOkeCluster cluster, String lifecycleState,
+    private void finishCreate(PendingCluster started, StoredOkeCluster cluster, String lifecycleState,
                               String workRequestStatus, String details) {
+        String owner = started.tenancyId();
         AtomicBoolean recorded = new AtomicBoolean();
         pendingClusters.computeIfPresent(cluster.getId(), (id, pending) -> {
             cluster.setLifecycleState(lifecycleState);
             cluster.setLifecycleDetails(details);
+            // A new server may sit on a new volume, with a new join token.
+            cluster.setJoinToken(null);
             putCluster(owner, cluster);
-            if (cluster.getCreateWorkRequestId() != null) {
+            if (pending.workRequestId() != null) {
                 // Terraform builds its failure message from the work request's errors.
                 List<StoredWorkRequest.ErrorEntry> errors = "FAILED".equals(workRequestStatus) && details != null
                         ? List.of(new StoredWorkRequest.ErrorEntry("InternalServerError", details))
                         : List.of();
                 workRequests.finish(owner, cluster.getRegion(),
-                        cluster.getCreateWorkRequestId(), workRequestStatus, errors);
+                        pending.workRequestId(), workRequestStatus, errors);
             }
             recorded.set(true);
             return null;
@@ -303,6 +374,12 @@ public class OkeService implements Resettable, CompartmentUsage {
             return;
         }
         LOG.infov("OKE cluster {0} is {1}", cluster.getId(), lifecycleState);
+        if ("ACTIVE".equals(lifecycleState)) {
+            if (hasAddon(cluster, OkeAddons.METRICS_SERVER)) {
+                clusterManager.applyMetricsServer(cluster, true);
+            }
+            requestReconcile(cluster);
+        }
     }
 
     /**
@@ -333,6 +410,10 @@ public class OkeService implements Resettable, CompartmentUsage {
     @Override
     public void clear() {
         pendingClusters.clear();
+        reconcileQueue.clear();
+        finishedNodes.clear();
+        capWarnings.clear();
+        poolsPendingSince.clear();
         clusters.clear();
         nodePools.clear();
         if (clusterManager != null) {
@@ -352,6 +433,15 @@ public class OkeService implements Resettable, CompartmentUsage {
         static final ClusterSettings NONE = new ClusterSettings(null, null, null, null, null);
     }
     public record CreateNodePoolResult(String workRequestId, StoredNodePool nodePool) {}
+
+    /** The optional settings of CreateNodePoolDetails and UpdateNodePoolDetails, as the client sent them. */
+    public record NodePoolSettings(List<String> subnetIds, Map<String, Object> nodeConfigDetails,
+                                   Map<String, Object> nodeShapeConfig, List<Map<String, Object>> initialNodeLabels,
+                                   Map<String, Object> nodeSourceDetails, String sshPublicKey,
+                                   Map<String, String> nodeMetadata, Map<String, Object> nodePoolCyclingDetails,
+                                   Map<String, Object> nodeEvictionNodePoolSettings) {
+        static final NodePoolSettings NONE = new NodePoolSettings(null, null, null, null, null, null, null, null, null);
+    }
 
     // ── Clusters ─────────────────────────────────────────────────────────────
 
@@ -377,9 +467,11 @@ public class OkeService implements Resettable, CompartmentUsage {
         if (vcnId == null || vcnId.isBlank()) {
             throw OciException.missingParameter("Missing required parameter: vcnId");
         }
+        String version = OkeVersions.requireForNewCluster(kubernetesVersion);
         String type = OkeClusterSettings.type(settings.type());
         Map<String, Object> endpointConfig = OkeClusterSettings.endpointConfig(settings.endpointConfig());
         Map<String, Object> options = OkeClusterSettings.createOptions(settings.options());
+        OkeNetwork.validate(options);
         Map<String, Object> imagePolicyConfig = OkeClusterSettings.imagePolicyConfig(settings.imagePolicyConfig());
         List<Map<String, Object>> podNetworkOptions =
                 OkeClusterSettings.podNetworkOptions(settings.clusterPodNetworkOptions());
@@ -390,7 +482,7 @@ public class OkeService implements Resettable, CompartmentUsage {
         cluster.setName(name);
         cluster.setCompartmentId(compartmentId);
         cluster.setVcnId(vcnId);
-        cluster.setKubernetesVersion(kubernetesVersion != null ? kubernetesVersion : "v1.30.1");
+        cluster.setKubernetesVersion(version);
         cluster.setKmsKeyId(kmsKeyId);
         cluster.setLifecycleState("CREATING");
         cluster.setLifecycleDetails(null);
@@ -407,13 +499,10 @@ public class OkeService implements Resettable, CompartmentUsage {
         cluster.setTenancyId(tenancyId.get());
         cluster.setRegion(ociContext.region());
 
-        if (clusterManager != null) {
+        if (realMode()) {
             clusterManager.startCluster(cluster);
         } else {
-            cluster.setEndpoints(Map.of(
-                "kubernetes", "https://127.0.0.1:6443",
-                "privateEndpoint", "10.0.0.10:6443"
-            ));
+            cluster.setEndpoints(MOCK_ENDPOINTS);
             cluster.setLifecycleState("ACTIVE");
         }
 
@@ -430,7 +519,7 @@ public class OkeService implements Resettable, CompartmentUsage {
         clusters.put(clusterId, cluster);
         if (creating) {
             // Only once stored: the poller drops a pending entry whose cluster it cannot find.
-            pendingClusters.put(clusterId, new PendingCluster(cluster.getTenancyId(), clock.instant()));
+            pendingClusters.put(clusterId, new PendingCluster(cluster.getTenancyId(), clock.instant(), workRequestId));
         }
         return new CreateClusterResult(workRequestId, cluster);
     }
@@ -481,10 +570,17 @@ public class OkeService implements Resettable, CompartmentUsage {
         String type = OkeClusterSettings.type(settings.type());
         Map<String, Object> imagePolicyConfig = OkeClusterSettings.imagePolicyConfig(settings.imagePolicyConfig());
         Map<String, Object> options = OkeClusterSettings.updatedOptions(cluster.getOptions(), settings.options());
+        boolean upgrade = kubernetesVersion != null && !kubernetesVersion.isBlank()
+                && !kubernetesVersion.equals(cluster.getKubernetesVersion());
+        if (upgrade) {
+            requireActive(cluster, "upgraded");
+            OkeVersions.requireClusterUpgrade(cluster.getKubernetesVersion(), kubernetesVersion,
+                    nodeVersions(clusterId));
+        }
         if (name != null && !name.isBlank()) {
             cluster.setName(name);
         }
-        if (kubernetesVersion != null && !kubernetesVersion.isBlank()) {
+        if (upgrade) {
             cluster.setKubernetesVersion(kubernetesVersion);
         }
         if (freeformTags != null) {
@@ -500,7 +596,61 @@ public class OkeService implements Resettable, CompartmentUsage {
             cluster.setImagePolicyConfig(imagePolicyConfig);
         }
         cluster.setOptions(options);
+        if (upgrade && realMode()) {
+            return upgradeControlPlane(cluster);
+        }
         return clusterUpdated(cluster);
+    }
+
+    /**
+     * Recreates the k3s server on the new version's image, on the same volume, so the cluster keeps
+     * its data, CA and agents. The cluster is UPDATING with an IN_PROGRESS CLUSTER_UPDATE work
+     * request until the new server answers, as on create.
+     */
+    private String upgradeControlPlane(StoredOkeCluster cluster) {
+        cluster.setEtag(Etags.newEtag());
+        cluster.setLifecycleState("UPDATING");
+        StoredWorkRequest.Resource res = WorkRequestService.resource(
+            "cluster", "UPDATED", cluster.getId(), "/20180222/clusters/" + cluster.getId()
+        );
+        String workRequestId = workRequests.inProgress("oke", "CLUSTER_UPDATE", cluster.getCompartmentId(),
+                List.of(res));
+        clusters.put(cluster.getId(), cluster);
+        PendingCluster pending = new PendingCluster(cluster.getTenancyId(), clock.instant(), workRequestId);
+        try {
+            clusterManager.restartCluster(cluster);
+        } catch (RuntimeException e) {
+            pendingClusters.put(cluster.getId(), pending);
+            finishCreate(pending, cluster, "FAILED", "FAILED", "The k3s server did not start on "
+                    + cluster.getKubernetesVersion() + ": " + e.getMessage());
+            return workRequestId;
+        }
+        // Only once the new server exists: the poller fails a pending cluster whose server is gone.
+        pendingClusters.put(cluster.getId(), new PendingCluster(cluster.getTenancyId(), clock.instant(),
+                workRequestId));
+        return workRequestId;
+    }
+
+    /** OCI does not say what an operation on a cluster that is not ACTIVE gets; same rule as node pools. */
+    private static void requireActive(StoredOkeCluster cluster, String action) {
+        String state = cluster.getLifecycleState();
+        if ("CREATING".equals(state) || "UPDATING".equals(state)) {
+            throw new OciException("IncorrectState", "Cluster " + cluster.getId() + " is " + state
+                    + " and cannot be " + action + " until it is ACTIVE", 409);
+        }
+        if (!"ACTIVE".equals(state)) {
+            throw OciException.conflict("Cluster " + cluster.getId() + " is " + state + " and cannot be " + action);
+        }
+    }
+
+    /** The versions configured on the cluster's node pools and running on their nodes. */
+    private List<String> nodeVersions(String clusterId) {
+        List<String> versions = new ArrayList<>();
+        for (StoredNodePool pool : listNodePools(null, clusterId)) {
+            versions.add(pool.getKubernetesVersion());
+            pool.getNodes().forEach(node -> versions.add(node.getKubernetesVersion()));
+        }
+        return versions;
     }
 
     /** UpdateClusterEndpointConfig: NSGs, public IP and security attributes; the subnet stays. */
@@ -547,13 +697,17 @@ public class OkeService implements Resettable, CompartmentUsage {
             workRequests.finish(cluster.getTenancyId(), cluster.getRegion(),
                     cluster.getCreateWorkRequestId(), "CANCELED");
         }
-        if (clusterManager != null) {
+        reconcileQueue.remove(clusterId);
+        capWarnings.remove(clusterId);
+        if (realMode()) {
             clusterManager.stopCluster(cluster);
         }
 
         List<StoredNodePool> dependentPools = listNodePools(null, clusterId);
         for (StoredNodePool pool : dependentPools) {
             pool.setLifecycleState("DELETED");
+            pool.getNodes().forEach(node -> finishedNodes.remove(node.getId()));
+            poolsPendingSince.remove(pool.getId());
             nodePools.delete(pool.getId());
         }
 
@@ -571,15 +725,29 @@ public class OkeService implements Resettable, CompartmentUsage {
                                  int quantityPerSubnet,
                                  Map<String, String> freeformTags,
                                  Map<String, Map<String, Object>> definedTags) {
+        return createNodePool(compartmentId, clusterId, name, kubernetesVersion, nodeShape,
+                quantityPerSubnet > 0 ? quantityPerSubnet : null, freeformTags, definedTags, NodePoolSettings.NONE);
+    }
+
+    public synchronized CreateNodePoolResult createNodePool(String compartmentId, String clusterId, String name,
+                                 String kubernetesVersion, String nodeShape,
+                                 Integer quantityPerSubnet,
+                                 Map<String, String> freeformTags,
+                                 Map<String, Map<String, Object>> definedTags,
+                                 NodePoolSettings settings) {
         if (compartmentId == null || compartmentId.isBlank()) {
             throw OciException.missingParameter("Missing required parameter: compartmentId");
         }
         if (clusterId == null || clusterId.isBlank()) {
             throw OciException.missingParameter("Missing required parameter: clusterId");
         }
-        requireClusterTakesNodePools(getCluster(clusterId));
+        StoredOkeCluster cluster = getCluster(clusterId);
+        requireClusterTakesNodePools(cluster);
         if (name == null || name.isBlank()) {
             throw OciException.missingParameter("Missing required parameter: name");
+        }
+        if (quantityPerSubnet != null && quantityPerSubnet < 0) {
+            throw OciException.invalidParameter("quantityPerSubnet must not be negative");
         }
 
         String nodePoolId = Ocids.generate("nodepool", ociContext.realm(), ociContext.regionCode());
@@ -588,21 +756,133 @@ public class OkeService implements Resettable, CompartmentUsage {
         pool.setName(name);
         pool.setCompartmentId(compartmentId);
         pool.setClusterId(clusterId);
-        pool.setKubernetesVersion(kubernetesVersion != null ? kubernetesVersion : "v1.30.1");
+        String poolVersion = kubernetesVersion != null && !kubernetesVersion.isBlank()
+                ? kubernetesVersion : cluster.getKubernetesVersion();
+        OkeVersions.requireNodePoolVersion(cluster.getKubernetesVersion(), poolVersion);
+        pool.setKubernetesVersion(poolVersion);
         pool.setNodeShape(nodeShape != null ? nodeShape : "VM.Standard.E4.Flex");
-        pool.setQuantityPerSubnet(quantityPerSubnet > 0 ? quantityPerSubnet : 1);
+        pool.setQuantityPerSubnet(quantityPerSubnet != null ? quantityPerSubnet : 1);
+        pool.setSubnetIds(settings.subnetIds());
+        pool.setNodeConfigDetails(OkeNodePools.nodeConfigDetails(settings.nodeConfigDetails(), true));
+        pool.setNodeShapeConfig(OkeNodePools.shapeConfig(settings.nodeShapeConfig()));
+        pool.setInitialNodeLabels(OkeNodePools.initialNodeLabels(settings.initialNodeLabels()));
+        OkeNodeLabels.validate(pool.getInitialNodeLabels());
+        OkeShapes.size(pool.getNodeShape(), pool.getNodeShapeConfig());
+        pool.setNodeSourceDetails(settings.nodeSourceDetails());
+        pool.setSshPublicKey(settings.sshPublicKey());
+        pool.setNodeMetadata(settings.nodeMetadata());
+        pool.setNodePoolCyclingDetails(OkeNodePools.cyclingDetails(settings.nodePoolCyclingDetails()));
+        pool.setNodeEvictionNodePoolSettings(OkeNodePools.evictionSettings(settings.nodeEvictionNodePoolSettings()));
         pool.setLifecycleState("ACTIVE");
         pool.setTimeCreated(Instant.now());
         pool.setFreeformTags(freeformTags);
         pool.setDefinedTags(definedTags);
-
-        nodePools.put(nodePoolId, pool);
+        pool.setTenancyId(tenancyId.get());
+        pool.setRegion(ociContext.region());
+        resizeNodes(cluster, pool);
 
         StoredWorkRequest.Resource res = WorkRequestService.resource(
             "nodepool", "CREATED", nodePoolId, "/20180222/nodePools/" + nodePoolId
         );
-        String workRequestId = workRequests.succeeded("oke", "NODEPOOL_CREATE", compartmentId, List.of(res));
+        String workRequestId;
+        if (realMode() && !pool.getNodes().isEmpty()) {
+            // ACTIVE once the poller sees every node Ready, as OKE does.
+            pool.setLifecycleState("CREATING");
+            workRequestId = workRequests.inProgress("oke", "NODEPOOL_CREATE", compartmentId, List.of(res));
+            pool.setPendingWorkRequestId(workRequestId);
+            poolsPendingSince.put(nodePoolId, clock.instant());
+        } else {
+            workRequestId = workRequests.succeeded("oke", "NODEPOOL_CREATE", compartmentId, List.of(res));
+        }
+        nodePools.put(nodePoolId, pool);
+        requestReconcile(cluster);
         return new CreateNodePoolResult(workRequestId, pool);
+    }
+
+    private List<StoredNode> resizeNodes(StoredOkeCluster cluster, StoredNodePool pool) {
+        return resizeNodes(cluster, pool, Set.of());
+    }
+
+    /**
+     * Brings the pool's node list to its requested size. Nodes take the next free address of the
+     * cluster's node subnet other than {@code keepFree}; without a k3s agent behind them they are
+     * ACTIVE at once.
+     */
+    private List<StoredNode> resizeNodes(StoredOkeCluster cluster, StoredNodePool pool, Set<Integer> keepFree) {
+        Set<Integer> usedHosts = new HashSet<>(keepFree);
+        for (StoredNodePool other : listNodePools(null, cluster.getId())) {
+            if (!other.getId().equals(pool.getId())) {
+                other.getNodes().forEach(node -> usedHosts.add(OkeNodePools.hostOf(node.getPrivateIp())));
+            }
+        }
+        pool.getNodes().forEach(node -> usedHosts.add(OkeNodePools.hostOf(node.getPrivateIp())));
+        String nodeSubnet = cluster.getNodeSubnet() != null ? cluster.getNodeSubnet() : OkeNodePools.DEFAULT_NODE_SUBNET;
+        List<StoredNode> removed = OkeNodePools.resize(pool, cluster.getId(), nodeSubnet,
+                usedHosts, () -> Ocids.generate("instance", ociContext.realm(), ociContext.regionCode()),
+                this::defaultAvailabilityDomain);
+        if (!realMode()) {
+            for (StoredNode node : pool.getNodes()) {
+                if ("CREATING".equals(node.getLifecycleState())) {
+                    node.setLifecycleState("ACTIVE");
+                }
+            }
+        }
+        for (StoredNode node : removed) {
+            finishedNodes.remove(node.getId());
+            if (realMode()) {
+                clusterManager.removeNode(cluster, node, true);
+            }
+        }
+        return removed;
+    }
+
+    private static boolean cyclingEnabled(StoredNodePool pool) {
+        Map<String, Object> cycling = pool.getNodePoolCyclingDetails();
+        return cycling != null && Boolean.TRUE.equals(cycling.get("isNodeCyclingEnabled"));
+    }
+
+    /**
+     * Node cycling after a version change ({@code nodePoolCyclingDetails.isNodeCyclingEnabled}):
+     * {@code BOOT_VOLUME_REPLACE} keeps each node (its instance, address and name) and restarts it on
+     * the new version; {@code INSTANCE_REPLACE}, the default here since the SDK states none, replaces
+     * every node with a new one. Without cycling, OKE leaves running nodes on their version and only
+     * new nodes take the pool's ("Upgrading Managed Nodes"). floci-oci replaces all nodes at once,
+     * not {@code maximumSurge} and {@code maximumUnavailable} at a time.
+     *
+     * @return the addresses of the replaced nodes, which their replacements do not take: a new
+     *         instance gets a new address
+     */
+    private Set<Integer> cycleNodes(StoredOkeCluster cluster, StoredNodePool pool) {
+        Object modes = pool.getNodePoolCyclingDetails().get("cycleModes");
+        boolean bootVolumeReplace = modes instanceof List<?> list && list.contains("BOOT_VOLUME_REPLACE");
+        if (bootVolumeReplace) {
+            for (StoredNode node : pool.getNodes()) {
+                node.setKubernetesVersion(pool.getKubernetesVersion());
+                node.setLifecycleState(realMode() ? "UPDATING" : "ACTIVE");
+                finishedNodes.remove(node.getId());
+            }
+            return Set.of();
+        }
+        List<StoredNode> replaced = new ArrayList<>(pool.getNodes());
+        pool.getNodes().clear();
+        Set<Integer> addresses = new HashSet<>();
+        for (StoredNode node : replaced) {
+            addresses.add(OkeNodePools.hostOf(node.getPrivateIp()));
+            finishedNodes.remove(node.getId());
+            if (realMode()) {
+                clusterManager.removeNode(cluster, node, true);
+            }
+        }
+        return addresses;
+    }
+
+    /** The availability domain of nodes placed through the deprecated {@code subnetIds}. */
+    private String defaultAvailabilityDomain() {
+        if (identity == null) {
+            return null;
+        }
+        List<Map<String, Object>> availabilityDomains = identity.availabilityDomains(null);
+        return availabilityDomains.isEmpty() ? null : (String) availabilityDomains.getFirst().get("name");
     }
 
     public StoredNodePool getNodePool(String nodePoolId) {
@@ -618,33 +898,460 @@ public class OkeService implements Resettable, CompartmentUsage {
     }
 
     public String updateNodePool(String nodePoolId, String name, String kubernetesVersion, Integer quantityPerSubnet) {
+        return updateNodePool(nodePoolId, name, kubernetesVersion, quantityPerSubnet, null, null, null,
+                NodePoolSettings.NONE);
+    }
+
+    /**
+     * UpdateNodePool: every field is optional and replaces the stored one. A new size, placement or
+     * subnet list adds or removes nodes.
+     */
+    public synchronized String updateNodePool(String nodePoolId, String name, String kubernetesVersion,
+                                              Integer quantityPerSubnet, String nodeShape,
+                                              Map<String, String> freeformTags,
+                                              Map<String, Map<String, Object>> definedTags,
+                                              NodePoolSettings settings) {
         StoredNodePool pool = getNodePool(nodePoolId);
+        Map<String, Object> nodeConfigDetails = OkeNodePools.nodeConfigDetails(settings.nodeConfigDetails(), false);
+        Map<String, Object> shapeConfig = OkeNodePools.shapeConfig(settings.nodeShapeConfig());
+        List<Map<String, Object>> labels = OkeNodePools.initialNodeLabels(settings.initialNodeLabels());
+        OkeNodeLabels.validate(labels);
+        OkeShapes.size(nodeShape != null && !nodeShape.isBlank() ? nodeShape : pool.getNodeShape(),
+                shapeConfig != null ? shapeConfig : pool.getNodeShapeConfig());
+        if (quantityPerSubnet != null && quantityPerSubnet < 0) {
+            throw OciException.invalidParameter("quantityPerSubnet must not be negative");
+        }
+        StoredOkeCluster cluster = getCluster(pool.getClusterId());
+        boolean newVersion = kubernetesVersion != null && !kubernetesVersion.isBlank()
+                && !kubernetesVersion.equals(pool.getKubernetesVersion());
+        if (newVersion) {
+            OkeVersions.requireNodePoolVersion(cluster.getKubernetesVersion(), kubernetesVersion);
+        }
         if (name != null && !name.isBlank()) {
             pool.setName(name);
         }
         if (kubernetesVersion != null && !kubernetesVersion.isBlank()) {
             pool.setKubernetesVersion(kubernetesVersion);
         }
-        if (quantityPerSubnet != null && quantityPerSubnet > 0) {
+        if (quantityPerSubnet != null) {
             pool.setQuantityPerSubnet(quantityPerSubnet);
         }
-        nodePools.put(nodePoolId, pool);
+        if (nodeShape != null && !nodeShape.isBlank()) {
+            pool.setNodeShape(nodeShape);
+        }
+        if (settings.subnetIds() != null) {
+            pool.setSubnetIds(settings.subnetIds());
+        }
+        if (nodeConfigDetails != null) {
+            Map<String, Object> merged = pool.getNodeConfigDetails() != null
+                    ? new LinkedHashMap<>(pool.getNodeConfigDetails()) : new LinkedHashMap<>();
+            merged.putAll(nodeConfigDetails);
+            pool.setNodeConfigDetails(merged);
+        }
+        if (shapeConfig != null) {
+            pool.setNodeShapeConfig(shapeConfig);
+        }
+        if (labels != null) {
+            pool.setInitialNodeLabels(labels);
+        }
+        if (settings.nodeSourceDetails() != null) {
+            pool.setNodeSourceDetails(settings.nodeSourceDetails());
+        }
+        if (settings.sshPublicKey() != null) {
+            pool.setSshPublicKey(settings.sshPublicKey());
+        }
+        if (settings.nodeMetadata() != null) {
+            pool.setNodeMetadata(settings.nodeMetadata());
+        }
+        if (settings.nodePoolCyclingDetails() != null) {
+            pool.setNodePoolCyclingDetails(OkeNodePools.cyclingDetails(settings.nodePoolCyclingDetails()));
+        }
+        if (settings.nodeEvictionNodePoolSettings() != null) {
+            pool.setNodeEvictionNodePoolSettings(OkeNodePools.evictionSettings(settings.nodeEvictionNodePoolSettings()));
+        }
+        if (freeformTags != null) {
+            pool.setFreeformTags(freeformTags);
+        }
+        if (definedTags != null) {
+            pool.setDefinedTags(definedTags);
+        }
+        Set<Integer> replacedAddresses = newVersion && cyclingEnabled(pool) ? cycleNodes(cluster, pool) : Set.of();
+        resizeNodes(cluster, pool, replacedAddresses);
 
         StoredWorkRequest.Resource res = WorkRequestService.resource(
             "nodepool", "UPDATED", nodePoolId, "/20180222/nodePools/" + nodePoolId
         );
-        return workRequests.succeeded("oke", "NODEPOOL_UPDATE", pool.getCompartmentId(), List.of(res));
+        String workRequestId;
+        boolean waitsForNodes = pool.getNodes().stream().anyMatch(node -> !"ACTIVE".equals(node.getLifecycleState()));
+        if (realMode() && waitsForNodes) {
+            pool.setLifecycleState("UPDATING");
+            workRequestId = workRequests.inProgress("oke", "NODEPOOL_UPDATE", pool.getCompartmentId(), List.of(res));
+            pool.setPendingWorkRequestId(workRequestId);
+            poolsPendingSince.put(nodePoolId, clock.instant());
+        } else {
+            workRequestId = workRequests.succeeded("oke", "NODEPOOL_UPDATE", pool.getCompartmentId(), List.of(res));
+        }
+        nodePools.put(nodePoolId, pool);
+        requestReconcile(cluster);
+        return workRequestId;
     }
 
-    public String deleteNodePool(String nodePoolId) {
+    public synchronized String deleteNodePool(String nodePoolId) {
         StoredNodePool pool = getNodePool(nodePoolId);
+        Optional<StoredOkeCluster> cluster = clusters.get(pool.getClusterId());
+        for (StoredNode node : pool.getNodes()) {
+            finishedNodes.remove(node.getId());
+            if (realMode() && cluster.isPresent()) {
+                clusterManager.removeNode(cluster.get(), node, true);
+            }
+        }
+        if (pool.getPendingWorkRequestId() != null) {
+            workRequests.finish(pool.getTenancyId(), pool.getRegion(), pool.getPendingWorkRequestId(), "CANCELED");
+        }
+        poolsPendingSince.remove(nodePoolId);
         pool.setLifecycleState("DELETED");
         nodePools.delete(nodePoolId);
+        cluster.ifPresent(this::requestReconcile);
 
         StoredWorkRequest.Resource res = WorkRequestService.resource(
             "nodepool", "DELETED", nodePoolId, "/20180222/nodePools/" + nodePoolId
         );
         return workRequests.succeeded("oke", "NODEPOOL_DELETE", pool.getCompartmentId(), List.of(res));
+    }
+
+    // ── Cluster add-ons ─────────────────────────────────────────────────────
+
+    public List<StoredAddon> listAddons(String clusterId) {
+        return List.copyOf(getCluster(clusterId).getAddons());
+    }
+
+    public StoredAddon getAddon(String clusterId, String addonName) {
+        return getCluster(clusterId).getAddons().stream()
+                .filter(addon -> addon.getName().equals(addonName))
+                .findFirst()
+                .orElseThrow(() -> OciException.notAuthorizedOrNotFound("Addon not found: " + addonName));
+    }
+
+    /**
+     * InstallAddon. The add-on must be one floci-oci offers, the cluster ACTIVE and not a basic
+     * cluster, and {@code KubernetesMetricsServer} needs {@code CertManager} first unless
+     * {@code skipAddonDependenciesCheck} is {@code true}. OCI does not document the errors for these
+     * cases: 404 for an unknown add-on, 409 Conflict for one already installed without
+     * {@code isOverrideExisting} and 400 InvalidParameter otherwise are floci-oci's choices.
+     */
+    public synchronized String installAddon(String clusterId, String addonName, String version,
+                                            List<Map<String, Object>> configurations, Boolean overrideExisting,
+                                            String ifMatch) {
+        StoredOkeCluster cluster = getCluster(clusterId);
+        Etags.checkIfMatch(ifMatch, cluster.getEtag());
+        if (addonName == null || addonName.isBlank()) {
+            throw OciException.missingParameter("Missing required parameter: addonName");
+        }
+        OkeAddons.Option option = OkeAddons.option(addonName);
+        requireAddonsAllowed(cluster);
+        requireAddonVersion(option, version);
+        boolean installed = hasAddon(cluster, addonName);
+        if (installed && !Boolean.TRUE.equals(overrideExisting)) {
+            throw OciException.conflict("Addon " + addonName + " is already installed on cluster " + clusterId);
+        }
+        if (OkeAddons.METRICS_SERVER.equals(addonName) && !hasAddon(cluster, OkeAddons.CERT_MANAGER)
+                && !"true".equalsIgnoreCase(OkeAddons.configuration(configurations, OkeAddons.SKIP_DEPENDENCIES)
+                        .orElse("false"))) {
+            throw OciException.invalidParameter("Addon " + OkeAddons.METRICS_SERVER + " depends on "
+                    + OkeAddons.CERT_MANAGER + ": install it first or set " + OkeAddons.SKIP_DEPENDENCIES + " to true");
+        }
+        cluster.getAddons().removeIf(addon -> addon.getName().equals(addonName));
+        StoredAddon addon = new StoredAddon();
+        addon.setName(addonName);
+        addon.setVersion(option.version());
+        addon.setLifecycleState("ACTIVE");
+        addon.setTimeCreated(clock.instant());
+        addon.setConfigurations(configurations);
+        cluster.getAddons().add(addon);
+        if (realMode() && OkeAddons.METRICS_SERVER.equals(addonName)) {
+            clusterManager.applyMetricsServer(cluster, true);
+        }
+        return addonChanged(cluster, addonName, "ENABLE_ADDON", "CREATED");
+    }
+
+    public synchronized String updateAddon(String clusterId, String addonName, String version,
+                                           List<Map<String, Object>> configurations, String ifMatch) {
+        StoredOkeCluster cluster = getCluster(clusterId);
+        Etags.checkIfMatch(ifMatch, cluster.getEtag());
+        StoredAddon addon = getAddon(clusterId, addonName);
+        requireAddonVersion(OkeAddons.option(addonName), version);
+        if (configurations != null) {
+            addon.setConfigurations(configurations);
+        }
+        return addonChanged(cluster, addonName, "UPDATE_ADDON", "UPDATED");
+    }
+
+    /** DisableAddon; {@code isRemoveExistingAddOn} also removes what the add-on deployed. */
+    public synchronized String disableAddon(String clusterId, String addonName, Boolean removeExisting,
+                                            String ifMatch) {
+        if (removeExisting == null) {
+            throw OciException.missingParameter("Missing required parameter: isRemoveExistingAddOn");
+        }
+        StoredOkeCluster cluster = getCluster(clusterId);
+        Etags.checkIfMatch(ifMatch, cluster.getEtag());
+        getAddon(clusterId, addonName);
+        cluster.getAddons().removeIf(addon -> addon.getName().equals(addonName));
+        if (realMode() && removeExisting && OkeAddons.METRICS_SERVER.equals(addonName)) {
+            clusterManager.applyMetricsServer(cluster, false);
+        }
+        return addonChanged(cluster, addonName, "DISABLE_ADDON", "DELETED");
+    }
+
+    private static boolean hasAddon(StoredOkeCluster cluster, String addonName) {
+        return cluster.getAddons().stream().anyMatch(addon -> addon.getName().equals(addonName));
+    }
+
+    /**
+     * "You can only configure cluster add-ons when using enhanced clusters", and a cluster created
+     * through the API without a {@code type} is a basic cluster until June 15, 2027 (OKE service
+     * change announcement).
+     */
+    private static void requireAddonsAllowed(StoredOkeCluster cluster) {
+        requireActive(cluster, "given add-ons");
+        if (!"ENHANCED_CLUSTER".equals(cluster.getType())) {
+            throw OciException.invalidParameter("Cluster add-ons need an enhanced cluster; cluster "
+                    + cluster.getId() + " is a basic cluster");
+        }
+    }
+
+    private static void requireAddonVersion(OkeAddons.Option option, String version) {
+        if (version != null && !version.isBlank() && !version.equals(option.version())) {
+            throw OciException.invalidParameter("Invalid version " + version + " for addon " + option.name()
+                    + ". Supported versions: " + option.version());
+        }
+    }
+
+    private String addonChanged(StoredOkeCluster cluster, String addonName, String operation, String action) {
+        cluster.setEtag(Etags.newEtag());
+        clusters.put(cluster.getId(), cluster);
+        StoredWorkRequest.Resource res = WorkRequestService.resource("addon", action, cluster.getId(),
+                "/20180222/clusters/" + cluster.getId() + "/addons/" + addonName);
+        return workRequests.succeeded("oke", operation, cluster.getCompartmentId(), List.of(res));
+    }
+
+    // ── Worker node reconcile (real mode) ───────────────────────────────────
+
+    /** Asks the poller to bring the cluster's agents in line with its node pools. */
+    private void requestReconcile(StoredOkeCluster cluster) {
+        if (realMode() && cluster.getTenancyId() != null) {
+            reconcileQueue.put(cluster.getId(), cluster.getTenancyId());
+        }
+    }
+
+    private void reconcileQueued() {
+        for (Map.Entry<String, String> entry : reconcileQueue.entrySet()) {
+            try {
+                if (reconcile(entry.getValue(), entry.getKey())) {
+                    reconcileQueue.remove(entry.getKey(), entry.getValue());
+                }
+            } catch (RuntimeException e) {
+                LOG.warnv(e, "OKE node reconcile failed for cluster {0}", entry.getKey());
+            }
+        }
+    }
+
+    /**
+     * One node to run, with what starting its agent needs and the version it had, read under the
+     * service lock.
+     */
+    private record NodeWork(StoredNodePool pool, StoredNode node, String version) {}
+
+    /**
+     * One pass over a cluster's worker nodes: the first {@code max-nodes-per-cluster} nodes, by node
+     * pool creation order, get a k3s agent; nodes that are Ready get the labels and annotation OKE adds
+     * after the join; a pool waiting on its nodes becomes ACTIVE once all of them are, and its work
+     * request finishes. Docker and kubectl calls run outside the service lock.
+     *
+     * @return whether the cluster is settled and can leave the queue
+     */
+    boolean reconcile(String owner, String clusterId) {
+        StoredOkeCluster cluster;
+        List<NodeWork> running = new ArrayList<>();
+        synchronized (this) {
+            Optional<StoredOkeCluster> found = findCluster(owner, clusterId);
+            if (found.isEmpty() || "FAILED".equals(found.get().getLifecycleState())) {
+                return true;
+            }
+            cluster = found.get();
+            if (!"ACTIVE".equals(cluster.getLifecycleState())) {
+                return false;
+            }
+            int budget = config.services().oke().maxNodesPerCluster();
+            List<String> shortPools = new ArrayList<>();
+            for (StoredNodePool pool : clusterPools(owner, clusterId)) {
+                int skipped = 0;
+                for (StoredNode node : List.copyOf(pool.getNodes())) {
+                    if (budget > 0) {
+                        budget--;
+                        running.add(new NodeWork(pool, node, node.getKubernetesVersion()));
+                    } else {
+                        skipped++;
+                    }
+                }
+                if (skipped > 0) {
+                    shortPools.add(pool.getName() + " (" + skipped + " of " + pool.getNodes().size() + " nodes)");
+                }
+            }
+            String capWarning = shortPools.isEmpty() ? null : String.join(", ", shortPools);
+            if (capWarning != null && !capWarning.equals(capWarnings.put(clusterId, capWarning))) {
+                LOG.warnv("OKE cluster {0} asks for more nodes than max-nodes-per-cluster ({1}) allows; these node"
+                        + " pools run without a k3s agent for some nodes: {2}", clusterId,
+                        config.services().oke().maxNodesPerCluster(), capWarning);
+            } else if (capWarning == null) {
+                capWarnings.remove(clusterId);
+            }
+        }
+
+        if (cluster.getJoinToken() == null) {
+            Optional<String> token = clusterManager.readJoinToken(cluster);
+            if (token.isEmpty()) {
+                return false;
+            }
+            cluster.setJoinToken(token.get());
+            synchronized (this) {
+                findCluster(owner, clusterId).ifPresent(stored -> {
+                    stored.setJoinToken(token.get());
+                    putCluster(owner, stored);
+                });
+            }
+        }
+
+        Map<String, String> startedVersions = new HashMap<>();
+        Map<String, String> startFailures = new HashMap<>();
+        for (NodeWork work : running) {
+            startedVersions.put(work.node().getId(), work.version());
+            try {
+                if (clusterManager.ensureNode(cluster, work.pool(), work.node())) {
+                    finishedNodes.remove(work.node().getId());
+                }
+            } catch (RuntimeException e) {
+                LOG.warnv("Could not start the k3s agent of node {0}: {1}", work.node().getId(), e.getMessage());
+                startFailures.put(work.node().getId(), e.getMessage());
+            }
+        }
+        Map<String, Boolean> readiness = clusterManager.nodeReadiness(cluster).orElse(null);
+        if (readiness != null) {
+            for (NodeWork work : running) {
+                StoredNode node = work.node();
+                if (Boolean.TRUE.equals(readiness.get(node.getPrivateIp())) && !finishedNodes.contains(node.getId())
+                        && clusterManager.finishNode(cluster, work.pool(), node)) {
+                    finishedNodes.add(node.getId());
+                }
+            }
+            Set<String> expected = new HashSet<>();
+            running.forEach(work -> expected.add(work.node().getPrivateIp()));
+            clusterManager.deleteStaleNodes(cluster, expected, readiness);
+        }
+
+        List<StoredNode> orphans = new ArrayList<>();
+        Set<String> expectedAgents = new HashSet<>();
+        boolean settled;
+        synchronized (this) {
+            if (findCluster(owner, clusterId).isEmpty()) {
+                return true;
+            }
+            settled = true;
+            Set<String> present = new HashSet<>();
+            int budget = config.services().oke().maxNodesPerCluster();
+            for (StoredNodePool pool : clusterPools(owner, clusterId)) {
+                boolean allActive = true;
+                for (StoredNode node : pool.getNodes()) {
+                    present.add(node.getId());
+                    if (budget <= 0) {
+                        node.setRunning(false);
+                        node.setContainerName(null);
+                        node.setLifecycleState("ACTIVE");
+                        node.setLifecycleDetails("floci-oci runs at most "
+                                + config.services().oke().maxNodesPerCluster()
+                                + " nodes per cluster (max-nodes-per-cluster): this node has no Kubernetes node");
+                        continue;
+                    }
+                    budget--;
+                    expectedAgents.add(node.getId());
+                    if (!startedVersions.containsKey(node.getId())
+                            || !Objects.equals(startedVersions.get(node.getId()), node.getKubernetesVersion())) {
+                        // Added or cycled while this pass ran: the next pass starts it.
+                        allActive = false;
+                        settled = false;
+                        continue;
+                    }
+                    node.setRunning(true);
+                    node.setContainerName(clusterManager.nodeContainerName(node));
+                    node.setVolumeName(clusterManager.nodeVolumeName(node));
+                    if (finishedNodes.contains(node.getId())) {
+                        node.setLifecycleState("ACTIVE");
+                        node.setLifecycleDetails(null);
+                    } else {
+                        allActive = false;
+                        settled = false;
+                        node.setLifecycleDetails(startFailures.get(node.getId()));
+                    }
+                }
+                finishPoolIfDone(pool, allActive);
+                if (isPending(pool)) {
+                    settled = false;
+                }
+                TenancyAwareStorageBackend.putIn(nodePools,
+                        TenancyAwareStorageBackend.regionalPartition(owner, pool.getRegion()), pool.getId(), pool);
+            }
+            for (NodeWork work : running) {
+                if (!present.contains(work.node().getId())) {
+                    orphans.add(work.node());
+                }
+            }
+        }
+        for (StoredNode orphan : orphans) {
+            clusterManager.removeNode(cluster, orphan, true);
+        }
+        clusterManager.removeOrphanAgents(cluster, expectedAgents);
+        return settled;
+    }
+
+    private static boolean isPending(StoredNodePool pool) {
+        return "CREATING".equals(pool.getLifecycleState()) || "UPDATING".equals(pool.getLifecycleState());
+    }
+
+    /** A pending pool becomes ACTIVE once its nodes are, or FAILED past the ready timeout. */
+    private void finishPoolIfDone(StoredNodePool pool, boolean allActive) {
+        if (!isPending(pool)) {
+            return;
+        }
+        Instant since = poolsPendingSince.computeIfAbsent(pool.getId(), id -> clock.instant());
+        if (allActive) {
+            finishPool(pool, "ACTIVE", "SUCCEEDED", null);
+        } else if (clock.instant().isAfter(since.plusSeconds(config.services().oke().readyTimeoutSeconds()))) {
+            finishPool(pool, "FAILED", "FAILED", "The nodes of node pool " + pool.getId()
+                    + " were not Ready after " + config.services().oke().readyTimeoutSeconds() + " seconds");
+        }
+    }
+
+    private void finishPool(StoredNodePool pool, String lifecycleState, String workRequestStatus, String details) {
+        pool.setLifecycleState(lifecycleState);
+        pool.setLifecycleDetails(details);
+        poolsPendingSince.remove(pool.getId());
+        if (pool.getPendingWorkRequestId() != null) {
+            List<StoredWorkRequest.ErrorEntry> errors = details != null
+                    ? List.of(new StoredWorkRequest.ErrorEntry("InternalServerError", details))
+                    : List.of();
+            workRequests.finish(pool.getTenancyId(), pool.getRegion(), pool.getPendingWorkRequestId(),
+                    workRequestStatus, errors);
+            pool.setPendingWorkRequestId(null);
+        }
+        LOG.infov("OKE node pool {0} is {1}", pool.getId(), lifecycleState);
+    }
+
+    /** The cluster's node pools in creation order, the order they get nodes in under the cap. */
+    private List<StoredNodePool> clusterPools(String owner, String clusterId) {
+        return TenancyAwareStorageBackend.scanTenancy(nodePools, owner).stream()
+                .filter(pool -> clusterId.equals(pool.getClusterId()))
+                .sorted(Comparator.comparing((StoredNodePool pool) -> pool.getTimeCreated() != null
+                        ? pool.getTimeCreated() : Instant.EPOCH).thenComparing(StoredNodePool::getId))
+                .toList();
     }
 
     @Override

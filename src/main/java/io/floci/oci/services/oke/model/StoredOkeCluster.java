@@ -3,6 +3,7 @@ package io.floci.oci.services.oke.model;
 import io.quarkus.runtime.annotations.RegisterForReflection;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +38,9 @@ public class StoredOkeCluster {
     private Map<String, Object> imagePolicyConfig;
     private List<Map<String, Object>> clusterPodNetworkOptions;
     private String etag;
+    private String nodeSubnet;
+    private String joinToken;
+    private List<StoredAddon> addons = new ArrayList<>();
 
     /**
      * The OCI wire shape: excludes internal properties like {@code hostPort}, {@code apiToken},
@@ -303,6 +307,33 @@ public class StoredOkeCluster {
 
     public void setEtag(String etag) {
         this.etag = etag;
+    }
+
+    /** The {@code /24} of the cluster's Docker network that node addresses come from. Internal. */
+    public String getNodeSubnet() {
+        return nodeSubnet;
+    }
+
+    public void setNodeSubnet(String nodeSubnet) {
+        this.nodeSubnet = nodeSubnet;
+    }
+
+    /** The k3s server token agents join with, read from the server once it answers. Internal. */
+    public String getJoinToken() {
+        return joinToken;
+    }
+
+    public void setJoinToken(String joinToken) {
+        this.joinToken = joinToken;
+    }
+
+    /** Add-ons installed with InstallAddon; served by the add-on operations, not part of the cluster. */
+    public List<StoredAddon> getAddons() {
+        return addons;
+    }
+
+    public void setAddons(List<StoredAddon> addons) {
+        this.addons = addons != null ? addons : new ArrayList<>();
     }
 
     @RegisterForReflection

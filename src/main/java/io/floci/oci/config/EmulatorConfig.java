@@ -308,8 +308,21 @@ public interface EmulatorConfig {
             @WithDefault("false")
             boolean mock();
 
-            @WithDefault("rancher/k3s:v1.30.1-k3s1")
-            String defaultImage();
+            /**
+             * Repository of the k3s images. Each Kubernetes version runs on the k3s image of the
+             * same patch, {@code <image-repository>:v<version>-k3s1}.
+             * Env: FLOCI_OCI_SERVICES_OKE_IMAGE_REPOSITORY
+             */
+            @WithDefault("rancher/k3s")
+            String imageRepository();
+
+            /**
+             * Most k3s agent containers (worker nodes) one cluster runs, across its node pools in
+             * creation order. Nodes past it are reported by the API but get no container.
+             * Env: FLOCI_OCI_SERVICES_OKE_MAX_NODES_PER_CLUSTER
+             */
+            @WithDefault("5")
+            int maxNodesPerCluster();
 
             @WithDefault("6443")
             int apiServerBasePort();

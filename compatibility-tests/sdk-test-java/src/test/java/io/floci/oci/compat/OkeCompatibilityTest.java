@@ -53,7 +53,7 @@ class OkeCompatibilityTest {
                     .compartmentId(TENANCY)
                     .name("java-sdk-cluster")
                     .vcnId("ocid1.vcn.oc1.iad.javavcn")
-                    .kubernetesVersion("v1.30.1")
+                    .kubernetesVersion("v1.36.4")
                     .build())
                 .build()
         );
@@ -91,7 +91,7 @@ class OkeCompatibilityTest {
                     .compartmentId(TENANCY)
                     .clusterId(clusterId)
                     .name("java-pool")
-                    .kubernetesVersion("v1.30.1")
+                    .kubernetesVersion("v1.36.4")
                     .nodeShape("VM.Standard.E4.Flex")
                     .quantityPerSubnet(2)
                     .build())

@@ -180,7 +180,7 @@ flowchart LR
     Client -->|"HTTP :4599\nOCI wire protocol"| Router
     C -->|"invoke"| Fn["fnproject/fnserver\nsidecar"]
     Fn -->|"runs your image"| Docker
-    D -->|"startCluster"| K3s["rancher/k3s\nsidecar"]
+    D -->|"startCluster"| K3s["rancher/k3s\nserver + agents"]
     K3s -->|"spawns cluster"| Docker
 ```
 
@@ -193,7 +193,7 @@ flowchart LR
 | Messaging | Queue (visibility timeouts, dead-letter queues, channels), Streaming (partitioned log, cursors, consumer groups) |
 | Security | Vault + KMS (vaults, keys, key versions, **real** AES-GCM / RSA / ECDSA crypto), Secrets and secret bundles |
 | Serverless | Functions on API versions `20260325` and `20181201` (applications, functions, work requests, runtime catalog, real invocation through an Fn Project sidecar) |
-| Kubernetes | Container Engine for Kubernetes (OKE): clusters with their settings read back as sent, endpoint config updates, node pools, options, kubeconfig generation, work requests, real-mode k3s sidecar |
+| Kubernetes | Container Engine for Kubernetes (OKE): clusters on OKE's supported Kubernetes versions with control plane upgrades, endpoint config updates, node pools whose nodes are real k3s agents (OKE names, labels, provider IDs, shape sizing, GPU taint, version cycling), OKE's storage classes, pod and service networks, the metrics server add-on, options, kubeconfig generation, work requests |
 | Database | Database with PostgreSQL: DB systems, start/stop/restart, master password reset, connection details with a CA certificate, shapes, default and custom configurations, backups, restore and point-in-time recovery, instance patches, failover and replicas, Kerberos and insight settings, work requests, real PostgreSQL sidecar |
 | Organizations | Child tenancies (each with its own home region and isolated storage), organizations, organization tenancies, links, invitations, domains, subscriptions and mappings, orders; Governance Rules (allowed regions enforced) |
 | Async operations | Work requests, partitioned per service (Identity/Queue/Streaming use `SUCCEEDED`, Object Storage/OKE use `COMPLETED`) |
@@ -212,7 +212,7 @@ For operation-level compatibility, see the [Services Overview](https://floci.io/
 | Vault + KMS | In-process, real crypto | Vaults and keys with schedule/cancel deletion (no DELETE verb), key rotation, AES and RSA key import via `GetWrappingKey`/`ImportKey`/`ImportKeyVersion`; AES-GCM encrypt/decrypt whose envelope survives rotation, RSA/ECDSA sign/verify via JCA, CRC32 `plaintextChecksum` |
 | Secrets | In-process | Secret versions with CURRENT/PREVIOUS/LATEST stages; the `Secret` shape never echoes content: retrieval is through `/20190301/secretbundles`, including the bodyless POST `getByName` |
 | Functions | Real Docker (Fn Project) | Applications and functions with deterministic image digests; invocation proxied to a shared `fnproject/fnserver` sidecar that runs your real FDK image. `mock: true` disables Docker entirely |
-| OKE (Container Engine) | Real Docker (k3s) / In-process | Control plane CRUD (`/20180222`), options, kubeconfig YAML generator, work requests tracking; real-mode k3s sidecar driver (`rancher/k3s:v1.30.1-k3s1`) binding dynamic host ports (`6443..6543`) and persistent volumes (`/var/lib/rancher/k3s`). `mock: true` disables sidecar |
+| OKE (Container Engine) | Real Docker (k3s) / In-process | Clusters, node pools, add-ons, options, kubeconfig and work requests (`/20180222`). Real mode runs an agentless k3s server per cluster on the image of its Kubernetes version (`rancher/k3s:v1.34.10-k3s1` to `v1.37.0-k3s1`) and one k3s agent per node pool node on a per-cluster Docker network, at most `max-nodes-per-cluster` (5) per cluster, with dynamic host ports (`6443..6543`) and persistent volumes. `mock: true` disables Docker |
 | Database with PostgreSQL | Real Docker (PostgreSQL) / In-process | DB system CRUD (`/20220915`) driven by work requests, with a `DELETED` tombstone clients can poll; one `postgres:<major>-alpine` container per DB system, started in the background; connection details with a per-system CA certificate (`sslmode=verify-full` works); master password from the request or a Vault secret, never stored, reset in the running database; start/stop/restart keep the data volume; shapes and default configurations catalog. `mock: true` disables Docker |
 | Organizations | In-process | `CreateChildTenancy` registers a child tenancy with its own home region; requests signed with it see only its own resources; organizations, organization tenancies and links live with the parent tenancy; invitations bring an existing tenancy in; domains, domain governance, subscriptions (one V2 subscription per tenancy), subscription mappings and order activation complete the Tenant Manager control plane; wrapped `{"items":[…]}` lists |
 | Governance Rules | In-process | Governance rules (`/20220504`) of type `QUOTA`, `TAG` and `ALLOWED_REGIONS`, inclusion criteria, tenancy attachments for children opted in to governance, enforced rules as the child sees them; `ALLOWED_REGIONS` refuses a governed child's region subscription outside the list |
@@ -229,7 +229,7 @@ floci-oci runs a real container where in-process emulation would not be faithful
 | Service | Default image | What is real |
 |---|---|---|
 | Functions | `fnproject/fnserver:latest` | The open-source engine OCI Functions is built on. Your function image runs for real: fnserver spawns it as a sibling container and speaks the FDK http-stream contract |
-| OKE | `rancher/k3s:v1.30.1-k3s1` | Real local Kubernetes cluster execution via a k3s sidecar container with dynamic host port mapping (`6443..6543`) and named data volume `/var/lib/rancher/k3s` |
+| OKE | `rancher/k3s:v<version>-k3s1` | A real Kubernetes cluster per OKE cluster: an agentless k3s control plane on the image of the cluster's version, with a dynamic host port (`6443..6543`) and a named data volume, plus one k3s agent container per worker node, sized from its shape and labelled as OKE labels its nodes |
 | Database with PostgreSQL | `postgres:{major}-alpine` | A real PostgreSQL server per DB system, of the major the DB system asks for, with TLS, a host port from `15432..15531` and a named data volume; backup dumps are kept by the emulator, outside the containers |
 
 Docker-backed services need the Docker socket:
@@ -366,7 +366,7 @@ func main() {
 			CompartmentId:     common.String("ocid1.tenancy.oc1..flocilocaltenancy0000000000000000000000000000000000000000"),
 			Name:              common.String("go-demo-cluster"),
 			VcnId:             common.String("ocid1.vcn.oc1.iad.demovcn"),
-			KubernetesVersion: common.String("v1.30.1"),
+			KubernetesVersion: common.String("v1.36.4"),
 		},
 	})
 	if err != nil {

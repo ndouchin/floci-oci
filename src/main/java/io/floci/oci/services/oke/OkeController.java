@@ -21,6 +21,8 @@ import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -34,6 +36,8 @@ import java.util.Map;
 @Consumes(MediaType.APPLICATION_JSON)
 public class OkeController {
 
+    private static final String ALL_OPTIONS = "all";
+    private static final Instant ADDON_CATALOG_TIME = Instant.parse("2026-01-01T00:00:00Z");
     static final List<String> KUBECONFIG_ENDPOINTS =
             List.of("LEGACY_KUBERNETES", "PUBLIC_ENDPOINT", "PRIVATE_ENDPOINT", "VCN_HOSTNAME");
 
@@ -81,7 +85,7 @@ public class OkeController {
     @Path("/clusters/{clusterId}")
     public Response getCluster(@PathParam("clusterId") String clusterId) {
         StoredOkeCluster cluster = service.getCluster(clusterId);
-        return Response.ok(cluster.toWire()).header("etag", cluster.getEtag()).build();
+        return Response.ok(clusterWire(cluster)).header("etag", cluster.getEtag()).build();
     }
 
     @GET
@@ -89,9 +93,16 @@ public class OkeController {
     public Response listClusters(@QueryParam("compartmentId") String compartmentId) {
         compartments.requireInQuery(compartmentId);
         List<Map<String, Object>> clusters = service.listClusters(compartmentId).stream()
-                .map(StoredOkeCluster::toWire)
+                .map(OkeController::clusterWire)
                 .toList();
         return Response.ok(clusters).build();
+    }
+
+    /** The cluster with the versions it can be upgraded to, which follow from its own version. */
+    private static Map<String, Object> clusterWire(StoredOkeCluster cluster) {
+        Map<String, Object> wire = cluster.toWire();
+        wire.put("availableKubernetesUpgrades", OkeVersions.availableUpgrades(cluster.getKubernetesVersion()));
+        return wire;
     }
 
     @PUT
@@ -171,7 +182,8 @@ public class OkeController {
                 req.nodeShape,
                 req.quantityPerSubnet,
                 req.freeformTags,
-                req.definedTags
+                req.definedTags,
+                req.settings()
             );
 
             // CreateNodePool has no response body either.
@@ -185,7 +197,7 @@ public class OkeController {
     @Path("/nodePools/{nodePoolId}")
     public Response getNodePool(@PathParam("nodePoolId") String nodePoolId) {
         StoredNodePool pool = service.getNodePool(nodePoolId);
-        return Response.ok(pool).build();
+        return Response.ok(pool.toWire()).build();
     }
 
     @GET
@@ -193,19 +205,18 @@ public class OkeController {
     public Response listNodePools(@QueryParam("compartmentId") String compartmentId,
                                   @QueryParam("clusterId") String clusterId) {
         compartments.requireInQuery(compartmentId);
-        List<StoredNodePool> pools = service.listNodePools(compartmentId, clusterId);
+        List<Map<String, Object>> pools = service.listNodePools(compartmentId, clusterId).stream()
+                .map(StoredNodePool::toWire)
+                .toList();
         return Response.ok(pools).build();
     }
 
     @PUT
     @Path("/nodePools/{nodePoolId}")
     public Response updateNodePool(@PathParam("nodePoolId") String nodePoolId, UpdateNodePoolDetails details) {
-        String workRequestId = service.updateNodePool(
-            nodePoolId,
-            details != null ? details.name : null,
-            details != null ? details.kubernetesVersion : null,
-            details != null ? details.quantityPerSubnet : null
-        );
+        UpdateNodePoolDetails req = details != null ? details : new UpdateNodePoolDetails();
+        String workRequestId = service.updateNodePool(nodePoolId, req.name, req.kubernetesVersion,
+                req.quantityPerSubnet, req.nodeShape, req.freeformTags, req.definedTags, req.settings());
         return Response.status(Response.Status.ACCEPTED)
                 .header("opc-work-request-id", workRequestId)
                 .build();
@@ -220,24 +231,106 @@ public class OkeController {
                 .build();
     }
 
-    // ── Options ───────────────────────────────────────────────────────────────
+    // ── Add-ons ──────────────────────────────────────────────────────────────
 
-    @GET
-    @Path("/clusterOptions/{clusterOptionId}")
-    public Response getClusterOptions(@PathParam("clusterOptionId") String clusterOptionId) {
-        Map<String, Object> options = Map.of(
-            "kubernetesVersions", List.of("v1.30.1", "v1.29.1", "v1.28.2")
-        );
-        return Response.ok(options).build();
+    @POST
+    @Path("/clusters/{clusterId}/addons")
+    public Response installAddon(@PathParam("clusterId") String clusterId,
+                                 @HeaderParam("if-match") String ifMatch,
+                                 InstallAddonDetails details) {
+        InstallAddonDetails req = details != null ? details : new InstallAddonDetails();
+        return accepted(service.installAddon(clusterId, req.addonName, req.version, req.configurations,
+                req.isOverrideExisting, ifMatch));
     }
 
     @GET
+    @Path("/clusters/{clusterId}/addons")
+    public Response listAddons(@PathParam("clusterId") String clusterId) {
+        return Response.ok(service.listAddons(clusterId).stream().map(addon -> {
+            Map<String, Object> summary = addon.toWire();
+            summary.remove("configurations");
+            return summary;
+        }).toList()).build();
+    }
+
+    @GET
+    @Path("/clusters/{clusterId}/addons/{addonName}")
+    public Response getAddon(@PathParam("clusterId") String clusterId, @PathParam("addonName") String addonName) {
+        return Response.ok(service.getAddon(clusterId, addonName).toWire()).build();
+    }
+
+    @PUT
+    @Path("/clusters/{clusterId}/addons/{addonName}")
+    public Response updateAddon(@PathParam("clusterId") String clusterId, @PathParam("addonName") String addonName,
+                                @HeaderParam("if-match") String ifMatch, UpdateAddonDetails details) {
+        UpdateAddonDetails req = details != null ? details : new UpdateAddonDetails();
+        return accepted(service.updateAddon(clusterId, addonName, req.version, req.configurations, ifMatch));
+    }
+
+    @DELETE
+    @Path("/clusters/{clusterId}/addons/{addonName}")
+    public Response disableAddon(@PathParam("clusterId") String clusterId, @PathParam("addonName") String addonName,
+                                 @QueryParam("isRemoveExistingAddOn") Boolean removeExisting,
+                                 @HeaderParam("if-match") String ifMatch) {
+        return accepted(service.disableAddon(clusterId, addonName, removeExisting, ifMatch));
+    }
+
+    /** ListAddonOptions: the add-ons floci-oci offers for a Kubernetes version. */
+    @GET
+    @Path("/addonOptions")
+    public Response listAddonOptions(@QueryParam("kubernetesVersion") String kubernetesVersion,
+                                     @QueryParam("addonName") String addonName) {
+        if (kubernetesVersion == null || kubernetesVersion.isBlank()) {
+            throw OciException.missingParameter("Missing required parameter: kubernetesVersion");
+        }
+        return Response.ok(OkeAddons.optionSummaries(kubernetesVersion, addonName, ADDON_CATALOG_TIME)).build();
+    }
+
+    // ── Options ───────────────────────────────────────────────────────────────
+
+    /**
+     * {@code all} lists every version a new cluster can take; a cluster OCID lists that cluster's
+     * version and the ones it can be upgraded to.
+     */
+    @GET
+    @Path("/clusterOptions/{clusterOptionId}")
+    public Response getClusterOptions(@PathParam("clusterOptionId") String clusterOptionId,
+                                      @QueryParam("shouldListAllPatchVersions") Boolean allPatches) {
+        List<String> versions;
+        if (ALL_OPTIONS.equals(clusterOptionId)) {
+            versions = OkeVersions.advertised(Boolean.TRUE.equals(allPatches));
+        } else {
+            StoredOkeCluster cluster = service.getCluster(clusterOptionId);
+            versions = new ArrayList<>();
+            versions.add(cluster.getKubernetesVersion());
+            versions.addAll(OkeVersions.availableUpgrades(cluster.getKubernetesVersion()));
+        }
+        Map<String, Object> options = new LinkedHashMap<>();
+        options.put("kubernetesVersions", versions);
+        options.put("clusterPodNetworkOptions", OkeClusterSettings.CNI_TYPES.stream().sorted()
+                .map(cniType -> Map.of("cniType", cniType)).toList());
+        return Response.ok(options).build();
+    }
+
+    /**
+     * {@code all} lists every version a node pool can take; a cluster OCID lists the versions a node
+     * pool of that cluster can run: not newer than its control plane, within the skew policy.
+     */
+    @GET
     @Path("/nodePoolOptions/{nodePoolOptionId}")
-    public Response getNodePoolOptions(@PathParam("nodePoolOptionId") String nodePoolOptionId) {
-        Map<String, Object> options = Map.of(
-            "shapes", List.of("VM.Standard.E4.Flex", "VM.Standard2.1", "VM.Standard3.Flex"),
-            "kubernetesVersions", List.of("v1.30.1", "v1.29.1", "v1.28.2")
-        );
+    public Response getNodePoolOptions(@PathParam("nodePoolOptionId") String nodePoolOptionId,
+                                       @QueryParam("shouldListAllPatchVersions") Boolean allPatches) {
+        List<String> versions = OkeVersions.advertised(Boolean.TRUE.equals(allPatches));
+        if (!ALL_OPTIONS.equals(nodePoolOptionId)) {
+            String clusterVersion = service.getCluster(nodePoolOptionId).getKubernetesVersion();
+            versions = versions.stream()
+                    .filter(version -> OkeVersions.compare(version, clusterVersion) <= 0
+                            && OkeVersions.minor(clusterVersion) - OkeVersions.minor(version) <= OkeVersions.MAX_NODE_SKEW)
+                    .toList();
+        }
+        Map<String, Object> options = new LinkedHashMap<>();
+        options.put("kubernetesVersions", versions);
+        options.put("shapes", OkeShapes.names());
         return Response.ok(options).build();
     }
 
@@ -334,20 +427,50 @@ public class OkeController {
         public String endpoint;
     }
 
-    public static class CreateNodePoolDetails {
-        public String compartmentId;
-        public String clusterId;
+    /** The node pool fields CreateNodePoolDetails and UpdateNodePoolDetails share. */
+    public static class NodePoolDetails {
         public String name;
         public String kubernetesVersion;
         public String nodeShape;
-        public int quantityPerSubnet;
+        public Integer quantityPerSubnet;
+        public List<String> subnetIds;
+        public Map<String, Object> nodeConfigDetails;
+        public Map<String, Object> nodeShapeConfig;
+        public List<Map<String, Object>> initialNodeLabels;
+        public Map<String, Object> nodeSourceDetails;
+        public String sshPublicKey;
+        public Map<String, String> nodeMetadata;
+        public Map<String, Object> nodePoolCyclingDetails;
+        public Map<String, Object> nodeEvictionNodePoolSettings;
         public Map<String, String> freeformTags;
         public Map<String, Map<String, Object>> definedTags;
+
+        OkeService.NodePoolSettings settings() {
+            return new OkeService.NodePoolSettings(subnetIds, nodeConfigDetails, nodeShapeConfig, initialNodeLabels,
+                    nodeSourceDetails, sshPublicKey, nodeMetadata, nodePoolCyclingDetails,
+                    nodeEvictionNodePoolSettings);
+        }
     }
 
-    public static class UpdateNodePoolDetails {
-        public String name;
-        public String kubernetesVersion;
-        public Integer quantityPerSubnet;
+    /** {@code InstallAddonDetails}. */
+    public static class InstallAddonDetails {
+        public String addonName;
+        public String version;
+        public List<Map<String, Object>> configurations;
+        public Boolean isOverrideExisting;
+    }
+
+    /** {@code UpdateAddonDetails}. */
+    public static class UpdateAddonDetails {
+        public String version;
+        public List<Map<String, Object>> configurations;
+    }
+
+    public static class CreateNodePoolDetails extends NodePoolDetails {
+        public String compartmentId;
+        public String clusterId;
+    }
+
+    public static class UpdateNodePoolDetails extends NodePoolDetails {
     }
 }

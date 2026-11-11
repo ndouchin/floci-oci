@@ -19,12 +19,15 @@ import java.util.Map;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.emptyString;
+import static org.hamcrest.Matchers.endsWith;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasKey;
+import static org.hamcrest.Matchers.matchesPattern;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.startsWith;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -58,7 +61,7 @@ class OkeRestIntegrationTest {
                 "compartmentId", compartment,
                 "name", "rest-cluster",
                 "vcnId", VCN,
-                "kubernetesVersion", "v1.30.1"
+                "kubernetesVersion", OkeVersions.DEFAULT_VERSION
             ))
             .when().post("/20180222/clusters")
             .then()
@@ -89,7 +92,7 @@ class OkeRestIntegrationTest {
             .when().get("/20180222/clusters")
             .then()
                 .statusCode(200)
-                .body("[0].id", equalTo(clusterId));
+                .body("id", hasItem(clusterId));
 
         // 4. Kubeconfig Generation
         given()
@@ -109,7 +112,7 @@ class OkeRestIntegrationTest {
                 "compartmentId", compartment,
                 "clusterId", clusterId,
                 "name", "pool-rest",
-                "kubernetesVersion", "v1.30.1",
+                "kubernetesVersion", OkeVersions.DEFAULT_VERSION,
                 "nodeShape", "VM.Standard.E4.Flex",
                 "quantityPerSubnet", 2
             ))
@@ -263,7 +266,8 @@ class OkeRestIntegrationTest {
         String createWorkRequest = given()
             .header("Host", phoenix)
             .contentType(ContentType.JSON)
-            .body(Map.of("compartmentId", compartment, "name", "phoenix-cluster", "vcnId", VCN))
+            .body(Map.of("compartmentId", compartment, "name", "phoenix-cluster", "vcnId", VCN,
+                "kubernetesVersion", OkeVersions.DEFAULT_VERSION))
             .when().post("/20180222/clusters")
             .then().statusCode(202)
             .extract().header("opc-work-request-id");
@@ -310,12 +314,268 @@ class OkeRestIntegrationTest {
     }
 
     private static String createCluster(String name) {
+        return createCluster(name, OkeVersions.DEFAULT_VERSION);
+    }
+
+    private static String createCluster(String name, String version) {
         return OkeWorkRequests.createdId(given()
             .contentType(ContentType.JSON)
-            .body(Map.of("compartmentId", compartment, "name", name, "vcnId", VCN))
+            .body(Map.of("compartmentId", compartment, "name", name, "vcnId", VCN,
+                "kubernetesVersion", version))
             .when().post("/20180222/clusters")
             .then().statusCode(202)
             .extract().header("opc-work-request-id"));
+    }
+
+    @Test
+    void optionsAdvertiseOnlyTheVersionsFlociCanRun() {
+        given().when().get("/20180222/clusterOptions/all")
+            .then()
+                .statusCode(200)
+                .body("kubernetesVersions", equalTo(OkeVersions.advertised(false)))
+                .body("clusterPodNetworkOptions.cniType", hasItem("FLANNEL_OVERLAY"));
+        given().when().get("/20180222/nodePoolOptions/all")
+            .then()
+                .statusCode(200)
+                .body("kubernetesVersions", equalTo(OkeVersions.advertised(false)));
+
+        String clusterId = createCluster("options-cluster", "v1.35.2");
+        given().when().get("/20180222/clusterOptions/{id}", clusterId)
+            .then().statusCode(200).body("kubernetesVersions", equalTo(List.of("v1.35.2", "v1.36.4")));
+        given().when().get("/20180222/nodePoolOptions/{id}", clusterId)
+            .then().statusCode(200).body("kubernetesVersions", equalTo(List.of("v1.34.10", "v1.35.0", "v1.35.2")));
+    }
+
+    @Test
+    void createClusterNeedsASupportedVersion() {
+        given().contentType(ContentType.JSON)
+            .body(Map.of("compartmentId", compartment, "name", "no-version", "vcnId", VCN))
+            .when().post("/20180222/clusters")
+            .then()
+                .statusCode(400)
+                .header("opc-request-id", notNullValue())
+                .body("code", equalTo("MissingParameter"));
+        given().contentType(ContentType.JSON)
+            .body(Map.of("compartmentId", compartment, "name", "old-version", "vcnId", VCN,
+                    "kubernetesVersion", "v1.30.1"))
+            .when().post("/20180222/clusters")
+            .then()
+                .statusCode(400)
+                .body("code", equalTo("InvalidParameter"))
+                .body("message", containsString("v1.36.4"));
+    }
+
+    @Test
+    void clustersUpgradeOneMinorAtATimeAndNodePoolsStayWithinTheSkew() {
+        String clusterId = createCluster("upgrade-cluster", "v1.35.2");
+        given().when().get("/20180222/clusters/{id}", clusterId)
+            .then().statusCode(200).body("availableKubernetesUpgrades", equalTo(List.of("v1.36.4")));
+
+        given().contentType(ContentType.JSON).body(Map.of("kubernetesVersion", "v1.37.0"))
+            .when().put("/20180222/clusters/{id}", clusterId)
+            .then().statusCode(400).body("code", equalTo("InvalidParameter"));
+        given().contentType(ContentType.JSON)
+            .body(Map.of("compartmentId", compartment, "clusterId", clusterId, "name", "too-new",
+                    "kubernetesVersion", "v1.36.4", "nodeShape", "VM.Standard.E4.Flex"))
+            .when().post("/20180222/nodePools")
+            .then().statusCode(400).body("code", equalTo("InvalidParameter"));
+        String poolId = OkeWorkRequests.createdId(given().contentType(ContentType.JSON)
+            .body(Map.of("compartmentId", compartment, "clusterId", clusterId, "name", "same-version",
+                    "nodeShape", "VM.Standard.E4.Flex"))
+            .when().post("/20180222/nodePools")
+            .then().statusCode(202).extract().header("opc-work-request-id"));
+        given().when().get("/20180222/nodePools/{id}", poolId)
+            .then().statusCode(200).body("kubernetesVersion", equalTo("v1.35.2"));
+
+        given().contentType(ContentType.JSON).body(Map.of("kubernetesVersion", "v1.36.4"))
+            .when().put("/20180222/clusters/{id}", clusterId)
+            .then().statusCode(202);
+        given().when().get("/20180222/clusters/{id}", clusterId)
+            .then()
+                .statusCode(200)
+                .body("kubernetesVersion", equalTo("v1.36.4"))
+                .body("availableKubernetesUpgrades", equalTo(List.of("v1.37.0")));
+        given().contentType(ContentType.JSON).body(Map.of("kubernetesVersion", "v1.35.2"))
+            .when().put("/20180222/clusters/{id}", clusterId)
+            .then().statusCode(400).body("code", equalTo("InvalidParameter"));
+        given().contentType(ContentType.JSON).body(Map.of("kubernetesVersion", "v1.36.4"))
+            .when().put("/20180222/nodePools/{id}", poolId)
+            .then().statusCode(202);
+        given().when().get("/20180222/nodePools/{id}", poolId)
+            .then().statusCode(200).body("kubernetesVersion", equalTo("v1.36.4"));
+    }
+
+    @Test
+    void theMetricsServerAddonNeedsCertManagerAndAnEnhancedCluster() {
+        given().when().get("/20180222/addonOptions")
+            .then().statusCode(400).body("code", equalTo("MissingParameter"));
+        given().queryParam("kubernetesVersion", OkeVersions.DEFAULT_VERSION)
+            .when().get("/20180222/addonOptions")
+            .then()
+                .statusCode(200)
+                .body("name", hasItem("KubernetesMetricsServer"))
+                .body("find { it.name == 'KubernetesMetricsServer' }.isEssential", equalTo(false));
+
+        Map<String, Object> enhanced = new HashMap<>();
+        enhanced.put("compartmentId", compartment);
+        enhanced.put("name", "addon-cluster");
+        enhanced.put("vcnId", VCN);
+        enhanced.put("kubernetesVersion", OkeVersions.DEFAULT_VERSION);
+        enhanced.put("type", "ENHANCED_CLUSTER");
+        String clusterId = OkeWorkRequests.createdId(given().contentType(ContentType.JSON).body(enhanced)
+            .when().post("/20180222/clusters")
+            .then().statusCode(202).extract().header("opc-work-request-id"));
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "KubernetesMetricsServer"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(400).body("code", equalTo("InvalidParameter"));
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "Istio"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(404).body("code", equalTo("NotAuthorizedOrNotFound"));
+        String installRequest = given().contentType(ContentType.JSON).body(Map.of("addonName", "CertManager"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(202).extract().header("opc-work-request-id");
+        given().when().get("/20180222/workRequests/{id}", installRequest)
+            .then().statusCode(200).body("operationType", equalTo("ENABLE_ADDON")).body("status", equalTo("SUCCEEDED"));
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "KubernetesMetricsServer"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(202);
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "KubernetesMetricsServer"))
+            .when().post("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(409);
+
+        given().when().get("/20180222/clusters/{id}/addons/{name}", clusterId, "KubernetesMetricsServer")
+            .then()
+                .statusCode(200)
+                .body("name", equalTo("KubernetesMetricsServer"))
+                .body("lifecycleState", equalTo("ACTIVE"))
+                .body("version", notNullValue());
+        given().when().get("/20180222/clusters/{id}/addons", clusterId)
+            .then().statusCode(200).body("name", equalTo(List.of("CertManager", "KubernetesMetricsServer")));
+        given().when().delete("/20180222/clusters/{id}/addons/{name}", clusterId, "KubernetesMetricsServer")
+            .then().statusCode(400).body("code", equalTo("MissingParameter"));
+        given().queryParam("isRemoveExistingAddOn", true)
+            .when().delete("/20180222/clusters/{id}/addons/{name}", clusterId, "KubernetesMetricsServer")
+            .then().statusCode(202);
+        given().when().get("/20180222/clusters/{id}/addons/{name}", clusterId, "KubernetesMetricsServer")
+            .then().statusCode(404);
+
+        Map<String, Object> basic = new HashMap<>();
+        basic.put("compartmentId", compartment);
+        basic.put("name", "basic-cluster");
+        basic.put("vcnId", VCN);
+        basic.put("kubernetesVersion", OkeVersions.DEFAULT_VERSION);
+        basic.put("type", "BASIC_CLUSTER");
+        String basicId = OkeWorkRequests.createdId(given().contentType(ContentType.JSON).body(basic)
+            .when().post("/20180222/clusters")
+            .then().statusCode(202).extract().header("opc-work-request-id"));
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "CertManager"))
+            .when().post("/20180222/clusters/{id}/addons", basicId)
+            .then().statusCode(400).body("code", equalTo("InvalidParameter"));
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "CertManager"))
+            .when().post("/20180222/clusters/{id}/addons", createCluster("untyped-cluster"))
+            .then().statusCode(400).body("code", equalTo("InvalidParameter"));
+    }
+
+    @Test
+    void networkConfigMustBeValidNonOverlappingCidrs() {
+        Map<String, Object> details = new HashMap<>();
+        details.put("compartmentId", compartment);
+        details.put("name", "bad-network");
+        details.put("vcnId", VCN);
+        details.put("kubernetesVersion", OkeVersions.DEFAULT_VERSION);
+        details.put("options", Map.of("kubernetesNetworkConfig",
+                Map.of("podsCidr", "10.96.0.0/16", "servicesCidr", "10.96.0.0/16")));
+        given().contentType(ContentType.JSON).body(details)
+            .when().post("/20180222/clusters")
+            .then().statusCode(400).body("code", equalTo("InvalidParameter"));
+    }
+
+    @Test
+    void mockClustersCarryTheSameEndpointsAsRealOnes() {
+        String clusterId = createCluster("mock-endpoints-cluster");
+
+        given().when().get("/20180222/clusters/{id}", clusterId)
+            .then()
+                .statusCode(200)
+                .body("lifecycleState", equalTo("ACTIVE"))
+                .body("endpoints.kubernetes", equalTo("https://127.0.0.1:6443"))
+                .body("endpoints.privateEndpoint", equalTo("10.0.0.10:6443"));
+    }
+
+    @Test
+    void nodePoolReadsBackItsPlacementShapeAndLabelsAndListsItsNodes() {
+        String clusterId = createCluster("pool-model-cluster");
+        String subnetA = "ocid1.subnet.oc1.iad.aaaaaaaarestworkersubneta";
+        String subnetB = "ocid1.subnet.oc1.iad.aaaaaaaarestworkersubnetb";
+        Map<String, Object> details = new HashMap<>();
+        details.put("compartmentId", compartment);
+        details.put("clusterId", clusterId);
+        details.put("name", "pool-model");
+        details.put("kubernetesVersion", OkeVersions.DEFAULT_VERSION);
+        details.put("nodeShape", "VM.Standard.E4.Flex");
+        details.put("nodeShapeConfig", Map.of("ocpus", 2, "memoryInGBs", 16));
+        details.put("initialNodeLabels", List.of(Map.of("key", "team", "value", "payments")));
+        details.put("nodeSourceDetails", Map.of("sourceType", "IMAGE", "imageId", "ocid1.image.oc1.iad.restimage"));
+        details.put("nodeConfigDetails", Map.of(
+                "size", 3,
+                "placementConfigs", List.of(
+                        Map.of("availabilityDomain", "Floc:US-ASHBURN-AD-1", "subnetId", subnetA),
+                        Map.of("availabilityDomain", "Floc:US-ASHBURN-AD-2", "subnetId", subnetB,
+                                "faultDomains", List.of("FAULT-DOMAIN-3")))));
+        String poolId = OkeWorkRequests.createdId(given().contentType(ContentType.JSON).body(details)
+            .when().post("/20180222/nodePools")
+            .then().statusCode(202).extract().header("opc-work-request-id"));
+
+        given().when().get("/20180222/nodePools/{id}", poolId)
+            .then()
+                .statusCode(200)
+                .body("lifecycleState", equalTo("ACTIVE"))
+                .body("nodeShapeConfig.ocpus", equalTo(2.0f))
+                .body("nodeShapeConfig.memoryInGBs", equalTo(16.0f))
+                .body("initialNodeLabels[0].key", equalTo("team"))
+                .body("initialNodeLabels[0].value", equalTo("payments"))
+                .body("nodeSourceDetails.imageId", equalTo("ocid1.image.oc1.iad.restimage"))
+                .body("nodeConfigDetails.size", equalTo(3))
+                .body("nodeConfigDetails.placementConfigs[1].faultDomains[0]", equalTo("FAULT-DOMAIN-3"))
+                .body("nodes.size()", equalTo(3))
+                .body("nodes[0].id", startsWith("ocid1.instance.oc1.iad."))
+                .body("nodes[0].name", matchesPattern("oke-c[a-z0-9]{10}-n[a-z0-9]{10}-s[a-z0-9]{10}-0"))
+                .body("nodes[0].nodePoolId", equalTo(poolId))
+                .body("nodes[0].subnetId", equalTo(subnetA))
+                .body("nodes[0].availabilityDomain", equalTo("Floc:US-ASHBURN-AD-1"))
+                .body("nodes[0].faultDomain", equalTo("FAULT-DOMAIN-1"))
+                .body("nodes[0].kubernetesVersion", equalTo(OkeVersions.DEFAULT_VERSION))
+                .body("nodes[0].lifecycleState", equalTo("ACTIVE"))
+                .body("nodes[0].privateIp", notNullValue())
+                .body("nodes[0]", not(hasKey("containerName")))
+                .body("nodes[1].subnetId", equalTo(subnetB))
+                .body("nodes[1].faultDomain", equalTo("FAULT-DOMAIN-3"))
+                .body("nodes[2].subnetId", equalTo(subnetA))
+                .body("nodes[2].name", endsWith("-1"))
+                .body("$", not(hasKey("timeCreated")));
+    }
+
+    @Test
+    void nodePoolWithoutNodeConfigDetailsRunsQuantityPerSubnetNodesInEachSubnet() {
+        String clusterId = createCluster("pool-legacy-cluster");
+        String poolId = OkeWorkRequests.createdId(given().contentType(ContentType.JSON)
+            .body(Map.of(
+                "compartmentId", compartment,
+                "clusterId", clusterId,
+                "name", "pool-legacy",
+                "kubernetesVersion", OkeVersions.DEFAULT_VERSION,
+                "nodeShape", "VM.Standard2.1",
+                "quantityPerSubnet", 2,
+                "subnetIds", List.of("ocid1.subnet.oc1.iad.legacya", "ocid1.subnet.oc1.iad.legacyb")))
+            .when().post("/20180222/nodePools")
+            .then().statusCode(202).extract().header("opc-work-request-id"));
+
+        given().when().get("/20180222/nodePools/{id}", poolId)
+            .then()
+                .statusCode(200)
+                .body("quantityPerSubnet", equalTo(2))
+                .body("subnetIds.size()", equalTo(2))
+                .body("nodes.size()", equalTo(4));
     }
 
     @Test
@@ -324,7 +584,7 @@ class OkeRestIntegrationTest {
         details.put("compartmentId", compartment);
         details.put("name", "rest-settings-cluster");
         details.put("vcnId", VCN);
-        details.put("kubernetesVersion", "v1.30.1");
+        details.put("kubernetesVersion", OkeVersions.DEFAULT_VERSION);
         details.put("type", "ENHANCED_CLUSTER");
         details.put("endpointConfig", Map.of("subnetId", "ocid1.subnet.oc1.iad.restapi", "isPublicIpEnabled", false));
         details.put("clusterPodNetworkOptions", List.of(Map.of("cniType", "FLANNEL_OVERLAY")));
@@ -347,7 +607,7 @@ class OkeRestIntegrationTest {
                 .body("options.kubernetesNetworkConfig.podsCidr", equalTo("10.244.0.0/16"))
                 .body("options.serviceLbSubnetIds[0]", equalTo("ocid1.subnet.oc1.iad.restlb"))
                 .body("imagePolicyConfig.isPolicyEnabled", equalTo(false))
-                .body("availableKubernetesUpgrades.size()", equalTo(0))
+                .body("availableKubernetesUpgrades", equalTo(OkeVersions.availableUpgrades(OkeVersions.DEFAULT_VERSION)))
                 .extract().header("etag");
 
         given().contentType(ContentType.JSON).header("if-match", etag)

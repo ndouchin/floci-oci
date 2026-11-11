@@ -31,7 +31,7 @@ def test_cluster_and_node_pool_lifecycle(container_engine):
             compartment_id=TENANCY,
             name=name,
             vcn_id="ocid1.vcn.oc1.iad.pyvcn",
-            kubernetes_version="v1.30.1",
+            kubernetes_version="v1.36.4",
         )
     )
     assert created.status == 202
@@ -55,7 +55,7 @@ def exercise_cluster(container_engine, cluster_id, name):
     ).data
     assert cluster.name == name
     assert cluster.system_tags == {}
-    assert cluster.available_kubernetes_upgrades == []
+    assert cluster.available_kubernetes_upgrades == ["v1.37.0"]
 
     listed = container_engine.list_clusters(TENANCY).data
     assert any(item.id == cluster_id for item in listed)
@@ -71,7 +71,7 @@ def exercise_cluster(container_engine, cluster_id, name):
             compartment_id=TENANCY,
             cluster_id=cluster_id,
             name=pool_name,
-            kubernetes_version="v1.30.1",
+            kubernetes_version="v1.36.4",
             node_shape="VM.Standard.E4.Flex",
             quantity_per_subnet=2,
         )

@@ -31,6 +31,9 @@ import java.util.Map;
  * @param user User the container process runs as, formatted "uid[:gid]" (null = image USER)
  * @param groupAdd Supplementary group IDs added to the container process
  * @param labels Docker labels applied to the container, merged over the emulator defaults
+ * @param primaryNetwork Network the container is created on, even with port bindings (null = see networkMode)
+ * @param ipv4Address Fixed address on the network the container is created on (null = assigned by Docker)
+ * @param nanoCpus CPU limit in billionths of a CPU (null = no limit)
  */
 public record ContainerSpec(
         String image,
@@ -52,14 +55,17 @@ public record ContainerSpec(
         String workingDir,
         String user,
         List<String> groupAdd,
-        Map<String, String> labels
+        Map<String, String> labels,
+        String primaryNetwork,
+        String ipv4Address,
+        Long nanoCpus
 ) {
     /**
      * Creates a minimal spec with just the image name.
      * All other fields will be null or empty lists.
      */
     public ContainerSpec(String image) {
-        this(image, null, List.of(), null, null, null, Map.of(), List.of(), null, List.of(), List.of(), List.of(), null, false, null, List.of(), null, null, List.of(), Map.of());
+        this(image, null, List.of(), null, null, null, Map.of(), List.of(), null, List.of(), List.of(), List.of(), null, false, null, List.of(), null, null, List.of(), Map.of(), null, null, null);
     }
 
     /**

@@ -52,7 +52,8 @@ class OkeTokenKubeconfigRestIntegrationTest {
     private static String createCluster(String name) {
         return OkeWorkRequests.createdId(given()
             .contentType(ContentType.JSON)
-            .body(Map.of("compartmentId", compartment, "name", name, "vcnId", VCN))
+            .body(Map.of("compartmentId", compartment, "name", name, "vcnId", VCN,
+                "kubernetesVersion", OkeVersions.DEFAULT_VERSION))
             .when().post("/20180222/clusters")
             .then().statusCode(202)
             .extract().header("opc-work-request-id"));
