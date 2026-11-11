@@ -55,7 +55,7 @@ def exercise_cluster(container_engine, cluster_id, name):
     ).data
     assert cluster.name == name
     assert cluster.system_tags == {}
-    assert cluster.available_kubernetes_upgrades == []
+    assert cluster.available_kubernetes_upgrades == ["v1.37.0"]
 
     listed = container_engine.list_clusters(TENANCY).data
     assert any(item.id == cluster_id for item in listed)
