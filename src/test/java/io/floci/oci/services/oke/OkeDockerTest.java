@@ -238,6 +238,73 @@ class OkeDockerTest {
     }
 
     @Test
+    @Order(6)
+    void test6_aRegisteredKeyMapsTheCallerThroughIamAndRbac() throws InterruptedException {
+        String user = given().contentType(ContentType.JSON)
+            .body(Map.of("name", "oke-docker-dev", "description", "OKE Docker test user"))
+            .when().post("/20160918/users").then().statusCode(200).extract().path("id");
+        String devs = given().contentType(ContentType.JSON)
+            .body(Map.of("name", "oke-docker-devs", "description", "OKE Docker test group"))
+            .when().post("/20160918/groups").then().statusCode(200).extract().path("id");
+        given().contentType(ContentType.JSON).body(Map.of("userId", user, "groupId", devs))
+            .when().post("/20160918/userGroupMemberships").then().statusCode(200);
+        given().contentType(ContentType.JSON).body(Map.of("key", ClusterTokenMinter.publicKeyPem()))
+            .when().post("/20160918/users/{userId}/apiKeys", user).then().statusCode(200);
+
+        JsonPath self = selfSubjectReview(freshToken(user));
+        assertEquals(user, self.getString("status.userInfo.username"));
+        List<String> groups = self.getList("status.userInfo.groups");
+        assertTrue(groups.contains(devs) && groups.contains("system:authenticated"), groups::toString);
+        assertFalse(groups.contains("system:masters"), groups::toString);
+        assertEquals(403, kubeApi("Bearer " + freshToken(user), "/api/v1/namespaces/default/pods"),
+                "a verified user without manage clusters has only what RBAC grants");
+
+        kubePost("/apis/rbac.authorization.k8s.io/v1/namespaces/default/rolebindings", Map.of(
+                "apiVersion", "rbac.authorization.k8s.io/v1", "kind", "RoleBinding",
+                "metadata", Map.of("name", "devs-view"),
+                "roleRef", Map.of("apiGroup", "rbac.authorization.k8s.io", "kind", "ClusterRole", "name", "view"),
+                "subjects", List.of(Map.of("apiGroup", "rbac.authorization.k8s.io", "kind", "Group", "name", devs))));
+        Instant deadline = Instant.now().plus(Duration.ofSeconds(30));
+        int status = kubeApi("Bearer " + freshToken(user), "/api/v1/namespaces/default/pods");
+        while (status != 200 && Instant.now().isBefore(deadline)) {
+            status = kubeApi("Bearer " + freshToken(user), "/api/v1/namespaces/default/pods");
+        }
+        assertEquals(200, status, "a RoleBinding to the IAM group OCID applies");
+
+        String administrators = given().contentType(ContentType.JSON)
+            .body(Map.of("name", "Administrators", "description", "Tenancy administrators"))
+            .when().post("/20160918/groups").then().statusCode(200).extract().path("id");
+        given().contentType(ContentType.JSON).body(Map.of("userId", user, "groupId", administrators))
+            .when().post("/20160918/userGroupMemberships").then().statusCode(200);
+        assertTrue(selfSubjectReview(freshToken(user)).getList("status.userInfo.groups").contains("system:masters"),
+                "tenancy administrators are cluster-admin with no binding");
+
+        assertEquals(401, kubeApi("Bearer " + ClusterTokenMinter.tamperSignature(freshToken(user)),
+                "/api/v1/namespaces"));
+    }
+
+    /**
+     * A token minted in a second no earlier token of this test used: the API server caches webhook
+     * verdicts for 30 s by token, and a token signed in the same second is the same string.
+     */
+    private String freshToken(String user) throws InterruptedException {
+        Thread.sleep(1100);
+        return ClusterTokenMinter.mint(config.defaultRegion(), clusterId, config.defaultTenancyId(), user, Instant.now());
+    }
+
+    private JsonPath selfSubjectReview(String token) {
+        return given()
+            .config(RestAssuredConfig.config().sslConfig(SSLConfig.sslConfig().trustStore(clusterCa)))
+            .baseUri("https://127.0.0.1")
+            .port(apiPort)
+            .header("Authorization", "Bearer " + token)
+            .contentType(ContentType.JSON)
+            .body(Map.of("apiVersion", "authentication.k8s.io/v1", "kind", "SelfSubjectReview"))
+            .when().post("/apis/authentication.k8s.io/v1/selfsubjectreviews")
+            .then().statusCode(201).extract().jsonPath();
+    }
+
+    @Test
     @Order(10)
     void test10_aNodePoolRunsOneK3sAgentPerNodeWithOkeNamesLabelsAndProviderIds() throws InterruptedException {
         Map<String, Object> details = new HashMap<>();
@@ -487,6 +554,164 @@ class OkeDockerTest {
                 kube("/api/v1/nodes/" + node.get("privateIp")).getString("status.nodeInfo.kubeletVersion"));
     }
 
+    private String publicAddress;
+
+    @Test
+    @Order(40)
+    void test40_aLoadBalancerServiceGetsAnOciPublicAddressFromTheEmulatedController() throws InterruptedException {
+        kubePost("/apis/apps/v1/namespaces/default/deployments", Map.of(
+                "apiVersion", "apps/v1", "kind", "Deployment",
+                "metadata", Map.of("name", "web"),
+                "spec", Map.of(
+                        "replicas", 1,
+                        "selector", Map.of("matchLabels", Map.of("app", "web")),
+                        "template", Map.of(
+                                "metadata", Map.of("labels", Map.of("app", "web")),
+                                "spec", Map.of("containers", List.of(Map.of(
+                                        "name", "web", "image", "rancher/mirrored-library-busybox:1.37.0",
+                                        "command", List.of("sh", "-c", "mkdir -p /www && echo ok > /www/index.html"
+                                                + " && exec httpd -f -p 8080 -h /www"),
+                                        "ports", List.of(Map.of("containerPort", 8080)))))))));
+        kubePost("/api/v1/namespaces/default/services", loadBalancerService("web", Map.of()));
+
+        publicAddress = awaitLoadBalancerIp("web", Duration.ofSeconds(30));
+        assertTrue(publicAddress.startsWith("192.0.2."), publicAddress);
+        JsonPath service = kube("/api/v1/namespaces/default/services/web");
+        assertEquals(List.of("service.kubernetes.io/load-balancer-cleanup"), service.getList("metadata.finalizers"));
+        assertTrue(service.getString("metadata.annotations['floci.io/load-balancer-host-ports']")
+                .matches("TCP/80=127\\.0\\.0\\.1:\\d+"), service.prettify());
+        List<String> reasons = given()
+            .config(RestAssuredConfig.config().sslConfig(SSLConfig.sslConfig().trustStore(clusterCa)))
+            .baseUri("https://127.0.0.1").port(apiPort)
+            .header("Authorization", "Bearer " + staticToken())
+            .queryParam("fieldSelector", "involvedObject.name=web")
+            .when().get("/api/v1/namespaces/default/events")
+            .then().statusCode(200).extract().jsonPath().getList("items.reason");
+        assertTrue(reasons.contains("EnsuringLoadBalancer") && reasons.contains("EnsuredLoadBalancer"),
+                reasons::toString);
+        String applianceName = ContainerStorageHelper.dockerName(config, "oke-lb-" + service.getString("metadata.uid"));
+        assertTrue(exists(() -> docker.inspectContainerCmd(applianceName).exec()));
+    }
+
+    @Test
+    @Order(41)
+    void test41_theInternalAnnotationGivesAnAddressInTheClusterSubnet() throws InterruptedException {
+        kubePost("/api/v1/namespaces/default/services", loadBalancerService("web-internal",
+                Map.of("service.beta.kubernetes.io/oci-load-balancer-internal", "true")));
+
+        String internal = awaitLoadBalancerIp("web-internal", Duration.ofSeconds(30));
+
+        String subnet = service.findCluster(config.defaultTenancyId(), clusterId).orElseThrow().getNodeSubnet();
+        assertTrue(OkeLoadBalancerAddresses.inCidr(internal, subnet), internal + " in " + subnet);
+        assertEquals(subnet.substring(0, subnet.lastIndexOf('.')) + ".254", internal);
+    }
+
+    @Test
+    @Order(42)
+    void test42_theStatusSurvivesAScaleAsServicelbIsOff() throws InterruptedException {
+        given()
+            .config(RestAssuredConfig.config().sslConfig(SSLConfig.sslConfig().trustStore(clusterCa)))
+            .baseUri("https://127.0.0.1").port(apiPort)
+            .header("Authorization", "Bearer " + staticToken())
+            .contentType("application/merge-patch+json")
+            .body(Map.of("spec", Map.of("replicas", 2)))
+            .when().patch("/apis/apps/v1/namespaces/default/deployments/web/scale")
+            .then().statusCode(200);
+        Thread.sleep(10_000);
+
+        assertEquals(publicAddress, kube("/api/v1/namespaces/default/services/web")
+                .getString("status.loadBalancer.ingress[0].ip"));
+        assertEquals(1, kube("/api/v1/namespaces/default/services/web").getList("status.loadBalancer.ingress").size());
+    }
+
+    @Test
+    @Order(43)
+    void test43_thePublishedHostPortServesTheApp() throws InterruptedException {
+        String annotation = kube("/api/v1/namespaces/default/services/web")
+                .getString("metadata.annotations['floci.io/load-balancer-host-ports']");
+        int hostPort = Integer.parseInt(annotation.substring(annotation.lastIndexOf(':') + 1));
+        Instant deadline = Instant.now().plus(Duration.ofSeconds(60));
+        int status = 0;
+        while (Instant.now().isBefore(deadline)) {
+            try {
+                status = given().baseUri("http://127.0.0.1").port(hostPort).when().get("/index.html")
+                    .then().extract().statusCode();
+            } catch (RuntimeException notYet) {
+                status = 0;
+            }
+            if (status == 200) {
+                break;
+            }
+            Thread.sleep(1000);
+        }
+        assertEquals(200, status, "the appliance forwards its host port to a node's NodePort");
+    }
+
+    @Test
+    @Order(44)
+    void test44_aPodReachesTheLoadBalancerAddress() throws InterruptedException {
+        kubePost("/api/v1/namespaces/default/pods", Map.of(
+                "apiVersion", "v1", "kind", "Pod",
+                "metadata", Map.of("name", "lb-client"),
+                "spec", Map.of(
+                        "restartPolicy", "Never",
+                        "containers", List.of(Map.of("name", "client", "image", "rancher/mirrored-library-busybox:1.37.0",
+                                "command", List.of("sh", "-c", "for i in 1 2 3 4 5 6 7 8 9 10; do wget -q -T 5 -O-"
+                                        + " http://" + publicAddress + "/index.html | grep -q ok && exit 0; sleep 2;"
+                                        + " done; exit 1"))))));
+
+        awaitKube("/api/v1/namespaces/default/pods/lb-client", "status.phase", "Succeeded");
+    }
+
+    @Test
+    @Order(45)
+    void test45_deletingTheServiceRemovesItsApplianceAndFinalizer() throws InterruptedException {
+        String uid = kube("/api/v1/namespaces/default/services/web").getString("metadata.uid");
+        String appliance = ContainerStorageHelper.dockerName(config, "oke-lb-" + uid);
+        given()
+            .config(RestAssuredConfig.config().sslConfig(SSLConfig.sslConfig().trustStore(clusterCa)))
+            .baseUri("https://127.0.0.1").port(apiPort)
+            .header("Authorization", "Bearer " + staticToken())
+            .when().delete("/api/v1/namespaces/default/services/web")
+            .then().statusCode(200);
+
+        Instant deadline = Instant.now().plus(Duration.ofSeconds(30));
+        while ((kubeStatus("/api/v1/namespaces/default/services/web") != 404
+                || exists(() -> docker.inspectContainerCmd(appliance).exec())) && Instant.now().isBefore(deadline)) {
+            Thread.sleep(1000);
+        }
+        assertEquals(404, kubeStatus("/api/v1/namespaces/default/services/web"),
+                "the Service goes once the controller drops its finalizer");
+        assertFalse(exists(() -> docker.inspectContainerCmd(appliance).exec()));
+        String publicNetwork = ContainerStorageHelper.dockerName(config, "oke-lb-public");
+        assertFalse(exists(() -> docker.inspectNetworkCmd().withNetworkId(publicNetwork).exec()),
+                "the public network goes with its last appliance");
+    }
+
+    private static Map<String, Object> loadBalancerService(String name, Map<String, String> annotations) {
+        return Map.of(
+                "apiVersion", "v1", "kind", "Service",
+                "metadata", Map.of("name", name, "annotations", annotations),
+                "spec", Map.of(
+                        "type", "LoadBalancer",
+                        "selector", Map.of("app", "web"),
+                        "ports", List.of(Map.of("name", "http", "port", 80, "targetPort", 8080))));
+    }
+
+    private String awaitLoadBalancerIp(String service, Duration timeout) throws InterruptedException {
+        Instant deadline = Instant.now().plus(timeout);
+        String ip = null;
+        while (Instant.now().isBefore(deadline)) {
+            ip = kube("/api/v1/namespaces/default/services/" + service).getString("status.loadBalancer.ingress[0].ip");
+            if (ip != null) {
+                return ip;
+            }
+            Thread.sleep(1000);
+        }
+        assertNotNull(ip, "Service " + service + " got no load balancer address within " + timeout);
+        return ip;
+    }
+
     @Test
     @Order(99)
     void test99_deleteRemovesTheSidecarAgentsNetworkAndEveryVolume() throws InterruptedException {
@@ -519,6 +744,9 @@ class OkeDockerTest {
             assertFalse(exists(() -> docker.inspectContainerCmd(name).exec()), "container " + name + " is still there");
         }
         assertFalse(exists(() -> docker.inspectNetworkCmd().withNetworkId(network).exec()), "network " + network + " leaked");
+        assertTrue(docker.listContainersCmd().withShowAll(true)
+                .withLabelFilter(Map.of(OkeClusterManager.CLUSTER_LABEL, clusterId)).exec().isEmpty(),
+                "every agent and load balancer appliance goes with the cluster");
         // Memory storage mode, so the named volume goes as well as the anonymous ones.
         for (String volume : volumes) {
             assertFalse(exists(() -> docker.inspectVolumeCmd(volume).exec()), "volume " + volume + " leaked");

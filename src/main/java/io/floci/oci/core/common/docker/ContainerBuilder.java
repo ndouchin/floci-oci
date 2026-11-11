@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -132,6 +133,10 @@ public class ContainerBuilder {
         private String primaryNetwork;
         private String ipv4Address;
         private Long nanoCpus;
+        private final List<String> capAdd = new ArrayList<>();
+        private final Map<String, String> sysctls = new LinkedHashMap<>();
+        private final List<ContainerSpec.PublishedPort> publishedPorts = new ArrayList<>();
+        private final List<ContainerSpec.NetworkAttachment> networkAttachments = new ArrayList<>();
 
         Builder(String image, EmulatorConfig config, DockerHostResolver dockerHostResolver,
                 EmbeddedDnsServer embeddedDnsServer,
@@ -255,6 +260,37 @@ public class ContainerBuilder {
         /** A fixed address on the network the container is created on, which needs a configured subnet. */
         public Builder withIpv4Address(String address) {
             this.ipv4Address = address;
+            return this;
+        }
+
+        /**
+         * Publishes {@code containerPort}/{@code protocol} on {@code hostIp} (every interface when null)
+         * at {@code hostPort} (Docker picks one when 0), as {@code -p 127.0.0.1::53/udp} does.
+         */
+        public Builder withPublishedPort(int containerPort, String protocol, String hostIp, int hostPort) {
+            this.publishedPorts.add(new ContainerSpec.PublishedPort(containerPort,
+                    protocol.toLowerCase(Locale.ROOT), hostIp, hostPort));
+            return this;
+        }
+
+        /** Adds a Linux capability, such as {@code NET_ADMIN} (Docker {@code --cap-add}). */
+        public Builder withCapAdd(String capability) {
+            this.capAdd.add(capability);
+            return this;
+        }
+
+        /** Sets a namespaced kernel parameter, such as {@code net.ipv4.ip_forward} (Docker {@code --sysctl}). */
+        public Builder withSysctl(String key, String value) {
+            this.sysctls.put(key, value);
+            return this;
+        }
+
+        /**
+         * Joins {@code network} once the container runs, at {@code ipv4Address} when it is not null
+         * (which needs a network with a configured subnet).
+         */
+        public Builder withNetworkAttachment(String network, String ipv4Address) {
+            this.networkAttachments.add(new ContainerSpec.NetworkAttachment(network, ipv4Address));
             return this;
         }
 
@@ -481,7 +517,11 @@ public class ContainerBuilder {
                     Map.copyOf(labels),
                     primaryNetwork,
                     ipv4Address,
-                    nanoCpus
+                    nanoCpus,
+                    List.copyOf(capAdd),
+                    Map.copyOf(sysctls),
+                    List.copyOf(publishedPorts),
+                    List.copyOf(networkAttachments)
             );
         }
     }

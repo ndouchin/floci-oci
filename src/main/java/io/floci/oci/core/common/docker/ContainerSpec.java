@@ -34,6 +34,10 @@ import java.util.Map;
  * @param primaryNetwork Network the container is created on, even with port bindings (null = see networkMode)
  * @param ipv4Address Fixed address on the network the container is created on (null = assigned by Docker)
  * @param nanoCpus CPU limit in billionths of a CPU (null = no limit)
+ * @param capAdd Linux capabilities added to the container (Docker {@code --cap-add})
+ * @param sysctls Namespaced kernel parameters (Docker {@code --sysctl})
+ * @param publishedPorts Ports published with a protocol and host address, besides {@code portBindings}
+ * @param networkAttachments Networks joined once the container runs, each at a fixed address when given
  */
 public record ContainerSpec(
         String image,
@@ -58,21 +62,40 @@ public record ContainerSpec(
         Map<String, String> labels,
         String primaryNetwork,
         String ipv4Address,
-        Long nanoCpus
+        Long nanoCpus,
+        List<String> capAdd,
+        Map<String, String> sysctls,
+        List<PublishedPort> publishedPorts,
+        List<NetworkAttachment> networkAttachments
 ) {
+    /**
+     * A container port published on the Docker host.
+     *
+     * @param protocol {@code tcp}, {@code udp} or {@code sctp}
+     * @param hostIp   the host address to bind, null for every interface
+     * @param hostPort the host port, 0 to let Docker pick one
+     */
+    public record PublishedPort(int containerPort, String protocol, String hostIp, int hostPort) {
+    }
+
+    /** A network joined after the start, at {@code ipv4Address} when it is not null. */
+    public record NetworkAttachment(String network, String ipv4Address) {
+    }
+
     /**
      * Creates a minimal spec with just the image name.
      * All other fields will be null or empty lists.
      */
     public ContainerSpec(String image) {
-        this(image, null, List.of(), null, null, null, Map.of(), List.of(), null, List.of(), List.of(), List.of(), null, false, null, List.of(), null, null, List.of(), Map.of(), null, null, null);
+        this(image, null, List.of(), null, null, null, Map.of(), List.of(), null, List.of(), List.of(), List.of(), null, false, null, List.of(), null, null, List.of(), Map.of(), null, null, null, List.of(), Map.of(), List.of(), List.of());
     }
 
     /**
      * Returns true if this spec has any port bindings configured.
      */
     public boolean hasPortBindings() {
-        return portBindings != null && !portBindings.isEmpty();
+        return portBindings != null && !portBindings.isEmpty()
+                || publishedPorts != null && !publishedPorts.isEmpty();
     }
 
     /**

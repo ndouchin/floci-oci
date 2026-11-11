@@ -40,6 +40,7 @@ public class StoredOkeCluster {
     private String etag;
     private String nodeSubnet;
     private String joinToken;
+    private String loadBalancerMode;
     private List<StoredAddon> addons = new ArrayList<>();
 
     /**
@@ -353,5 +354,14 @@ public class StoredOkeCluster {
         public void setTimeCreated(Instant timeCreated) {
             this.timeCreated = timeCreated;
         }
+    }
+
+    /** {@code emulated}, {@code servicelb} or {@code off}; null for a cluster stored before load balancers were emulated. */
+    public String getLoadBalancerMode() {
+        return loadBalancerMode;
+    }
+
+    public void setLoadBalancerMode(String loadBalancerMode) {
+        this.loadBalancerMode = loadBalancerMode;
     }
 }

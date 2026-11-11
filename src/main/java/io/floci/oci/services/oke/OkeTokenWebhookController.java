@@ -1,6 +1,5 @@
 package io.floci.oci.services.oke;
 
-import io.floci.oci.core.auth.AuthContext;
 import io.floci.oci.services.oke.model.StoredOkeCluster;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
@@ -11,7 +10,6 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -34,11 +32,13 @@ public class OkeTokenWebhookController {
 
     private final OkeService service;
     private final OkeTokenValidator validator;
+    private final OkeIdentityMapper mapper;
 
     @Inject
-    public OkeTokenWebhookController(OkeService service, OkeTokenValidator validator) {
+    public OkeTokenWebhookController(OkeService service, OkeTokenValidator validator, OkeIdentityMapper mapper) {
         this.service = service;
         this.validator = validator;
+        this.mapper = mapper;
     }
 
     /**
@@ -58,7 +58,7 @@ public class OkeTokenWebhookController {
 
         Optional<StoredOkeCluster> cluster = service.findCluster(tenancyId, clusterId)
                 .filter(found -> tenancyId.equals(found.getTenancyId()));
-        Optional<AuthContext> caller = cluster.flatMap(found -> validator.validate(token, found));
+        Optional<OkeCaller> caller = cluster.flatMap(found -> validator.validate(token, found));
         if (caller.isEmpty()) {
             return Response.ok(Map.of(
                     "apiVersion", apiVersion,
@@ -70,9 +70,6 @@ public class OkeTokenWebhookController {
                 "kind", "TokenReview",
                 "status", Map.of(
                         "authenticated", true,
-                        "user", Map.of(
-                                "username", caller.get().userId(),
-                                "uid", caller.get().userId(),
-                                "groups", List.of("system:masters", "system:authenticated"))))).build();
+                        "user", mapper.map(caller.get(), cluster.get()).toWire()))).build();
     }
 }

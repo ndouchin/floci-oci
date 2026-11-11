@@ -61,23 +61,43 @@ public final class OciSignatureParser {
         return Optional.of(new AuthContext(parts[0], parts[1], parts[2]));
     }
 
+    /** Whether a keyId is a security token ({@code ST$<jwt>}) rather than {@code tenancy/user/fingerprint}. */
+    public static boolean isSecurityToken(String keyId) {
+        return keyId != null && keyId.startsWith(SECURITY_TOKEN_PREFIX);
+    }
+
+    /**
+     * The unverified claims of a security-token keyId's JWT, or empty when the keyId is not
+     * {@code ST$<jwt>} or its payload is not a JSON object.
+     */
+    public static Optional<JsonNode> securityTokenClaims(String keyId) {
+        if (!isSecurityToken(keyId)) {
+            return Optional.empty();
+        }
+        String[] segments = keyId.substring(SECURITY_TOKEN_PREFIX.length()).split("\\.", -1);
+        if (segments.length != 3) {
+            return Optional.empty();
+        }
+        try {
+            JsonNode claims = JSON.readTree(Base64.getUrlDecoder().decode(segments[1]));
+            return claims != null && claims.isObject() ? Optional.of(claims) : Optional.empty();
+        } catch (IllegalArgumentException | IOException e) {
+            LOG.debugv("Security token keyId has an unreadable JWT payload: {0}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
     /**
      * The caller named by an unverified security-token JWT, or empty when it is not a JWT or lacks a
      * {@code tenant} or {@code sub} claim. Resource principal tokens carry {@code res_tenant}
      * instead, so they stay unidentified, as before. A security token has no key fingerprint.
      */
     private static Optional<AuthContext> fromSecurityToken(String token) {
-        String[] segments = token.split("\\.", -1);
-        if (segments.length != 3) {
+        Optional<JsonNode> parsed = securityTokenClaims(SECURITY_TOKEN_PREFIX + token);
+        if (parsed.isEmpty()) {
             return Optional.empty();
         }
-        JsonNode claims;
-        try {
-            claims = JSON.readTree(Base64.getUrlDecoder().decode(segments[1]));
-        } catch (IllegalArgumentException | IOException e) {
-            LOG.debugv("Security token keyId has an unreadable JWT payload: {0}", e.getMessage());
-            return Optional.empty();
-        }
+        JsonNode claims = parsed.get();
         String tenant = textClaim(claims, "tenant");
         String subject = textClaim(claims, "sub");
         if (tenant == null || subject == null) {
@@ -86,7 +106,8 @@ public final class OciSignatureParser {
         return Optional.of(new AuthContext(tenant, subject, null));
     }
 
-    private static String textClaim(JsonNode claims, String name) {
+    /** A claim's non-blank text value, or null. */
+    public static String textClaim(JsonNode claims, String name) {
         JsonNode claim = claims == null ? null : claims.get(name);
         return claim != null && claim.isTextual() && !claim.asText().isBlank() ? claim.asText() : null;
     }

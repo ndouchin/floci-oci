@@ -24,6 +24,30 @@ public final class SecurityTokens {
                 + "\"e\":\"AQAB\",\"n\":\"" + filler(342) + "\"}}");
     }
 
+    /**
+     * A session token whose {@code jwk} claim is {@code jwkJson}, as a JSON object or, with
+     * {@code jwkAsString}, as a string holding it (the form the Java SDK's {@code SecurityTokenAdapter}
+     * parses).
+     */
+    public static String sessionWithJwk(String tenancyId, String userId, String jwkJson, boolean jwkAsString) {
+        String jwk = jwkAsString ? "\"" + jwkJson.replace("\"", "\\\"") + "\"" : jwkJson;
+        return jwt("{\"sub\":\"" + userId + "\",\"tenant\":\"" + tenancyId + "\",\"ttype\":\"login\","
+                + "\"iss\":\"authService.oracle.com\",\"aud\":\"oci\",\"iat\":1793000000,\"exp\":1793003600,"
+                + "\"jwk\":" + jwk + "}");
+    }
+
+    /**
+     * An instance principal token, with the claims of oci-go-sdk's {@code common/auth/jwt_test.go}
+     * payload: {@code sub} is the instance OCID.
+     */
+    public static String instancePrincipal(String tenancyId, String instanceId, String compartmentId) {
+        return jwt("{\"sub\":\"" + instanceId + "\",\"tenant\":\"" + tenancyId + "\",\"opc-tenant\":\"" + tenancyId
+                + "\",\"opc-instance\":\"" + instanceId + "\",\"opc-compartment\":\"" + compartmentId
+                + "\",\"opc-certtype\":\"instance\",\"ptype\":\"instance\",\"ttype\":\"x509\","
+                + "\"iss\":\"authService.oracle.com\",\"aud\":\"opc.oracle.com\",\"iat\":1793000000,"
+                + "\"exp\":1793003600}");
+    }
+
     /** A token with exactly the given claims, to exercise missing or malformed ones. */
     public static String jwt(String claimsJson) {
         String header = URL.encodeToString("{\"alg\":\"RS256\",\"kid\":\"asw\",\"typ\":\"JWT\"}"

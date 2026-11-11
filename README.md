@@ -75,7 +75,7 @@ oci iam compartment list --endpoint http://localhost:4599 \
   --compartment-id ocid1.tenancy.oc1..flocilocaltenancy0000000000000000000000000000000000000000
 ```
 
-Any locally generated API key works: floci-oci parses the request signature for tenancy and user context but never verifies it. See [OCI CLI & SDK Setup](https://floci.io/floci-oci/getting-started/oci-setup/) for a one-time throwaway config.
+Any locally generated API key works: floci-oci parses the request signature for tenancy and user context but never verifies it. The one exception is OKE: once you upload a key to identity, `oci ce cluster generate-token` tokens signed with it are verified and mapped through IAM, as on OKE (see the [Container Engine page](docs/services/containerengine.md#authentication)). See [OCI CLI & SDK Setup](https://floci.io/floci-oci/getting-started/oci-setup/) for a one-time throwaway config.
 
 <details>
 <summary>Prefer building from source?</summary>
@@ -205,20 +205,20 @@ For operation-level compatibility, see the [Services Overview](https://floci.io/
 
 | Service | How it works | Notable features |
 |---|---|---|
-| Identity (IAM) | In-process | Compartment CRUD incl. `compartmentIdInSubtree` listing and async delete via work request; users, groups, memberships; policies (statements stored verbatim); reference data (3 ADs, regions, tenancy); etag concurrency on every mutation |
+| Identity (IAM) | In-process | Compartment CRUD incl. `compartmentIdInSubtree` listing and async delete via work request; users, groups, memberships, API signing keys (fingerprints as OCI computes them); policies (statements stored verbatim); reference data (3 ADs, regions, tenancy); etag concurrency on every mutation |
 | Object Storage | In-process | Bucket CRUD (delete requires empty); objects with `Content-MD5` verification, `opc-meta-*` metadata, Range/206 reads, conditional headers; ListObjects with `prefix`/`start`/`end`/`delimiter`/`fields` and `nextStartWith` truncation; rename; async copy via work request; batch delete with per-object success/failure results; multipart uploads (per-part `etag` + `opc-content-md5`); pre-authenticated requests with anonymous `/p/{token}/…` data path |
 | Queue | In-process | Work-request-driven control plane (mutations return no body); data plane with visibility timeouts, `0`-visibility peeks, long polling, dead-letter queues, per-channel filtering, stats; wrapped `{"items":[…]}` list shape |
 | Streaming | In-process | Partitioned append-only log with key-hash placement; opaque cursors (`TRIM_HORIZON`/`LATEST`/`AT_OFFSET`/`AFTER_OFFSET`/`AT_TIME`), group cursors with commit + resume, `opc-next-cursor` paging; CreateStream returns body *and* work request |
 | Vault + KMS | In-process, real crypto | Vaults and keys with schedule/cancel deletion (no DELETE verb), key rotation, AES and RSA key import via `GetWrappingKey`/`ImportKey`/`ImportKeyVersion`; AES-GCM encrypt/decrypt whose envelope survives rotation, RSA/ECDSA sign/verify via JCA, CRC32 `plaintextChecksum` |
 | Secrets | In-process | Secret versions with CURRENT/PREVIOUS/LATEST stages; the `Secret` shape never echoes content: retrieval is through `/20190301/secretbundles`, including the bodyless POST `getByName` |
 | Functions | Real Docker (Fn Project) | Applications and functions with deterministic image digests; invocation proxied to a shared `fnproject/fnserver` sidecar that runs your real FDK image. `mock: true` disables Docker entirely |
-| OKE (Container Engine) | Real Docker (k3s) / In-process | Clusters, node pools, add-ons, options, kubeconfig and work requests (`/20180222`). Real mode runs an agentless k3s server per cluster on the image of its Kubernetes version (`rancher/k3s:v1.34.10-k3s1` to `v1.37.0-k3s1`) and one k3s agent per node pool node on a per-cluster Docker network, at most `max-nodes-per-cluster` (5) per cluster, with dynamic host ports (`6443..6543`) and persistent volumes. `mock: true` disables Docker |
+| OKE (Container Engine) | Real Docker (k3s) / In-process | Clusters, node pools, add-ons, options, kubeconfig and work requests (`/20180222`). Real mode runs an agentless k3s server per cluster on the image of its Kubernetes version (`rancher/k3s:v1.34.10-k3s1` to `v1.37.0-k3s1`) and one k3s agent per node pool node on a per-cluster Docker network, at most `max-nodes-per-cluster` (5) per cluster, with dynamic host ports (`6443..6543`) and persistent volumes. kubectl tokens signed with an API key uploaded to identity are verified and mapped through IAM groups and `manage clusters` grants (`token-verification`). LoadBalancer Services get OCI-shaped addresses (public from `192.0.2.0/24`, internal from the node subnet) held by one appliance container each, with a port on `127.0.0.1`. `mock: true` disables Docker |
 | Database with PostgreSQL | Real Docker (PostgreSQL) / In-process | DB system CRUD (`/20220915`) driven by work requests, with a `DELETED` tombstone clients can poll; one `postgres:<major>-alpine` container per DB system, started in the background; connection details with a per-system CA certificate (`sslmode=verify-full` works); master password from the request or a Vault secret, never stored, reset in the running database; start/stop/restart keep the data volume; shapes and default configurations catalog. `mock: true` disables Docker |
 | Organizations | In-process | `CreateChildTenancy` registers a child tenancy with its own home region; requests signed with it see only its own resources; organizations, organization tenancies and links live with the parent tenancy; invitations bring an existing tenancy in; domains, domain governance, subscriptions (one V2 subscription per tenancy), subscription mappings and order activation complete the Tenant Manager control plane; wrapped `{"items":[…]}` lists |
 | Governance Rules | In-process | Governance rules (`/20220504`) of type `QUOTA`, `TAG` and `ALLOWED_REGIONS`, inclusion criteria, tenancy attachments for children opted in to governance, enforced rules as the child sees them; `ALLOWED_REGIONS` refuses a governed child's region subscription outside the list |
 | Work Requests | In-process | `202` + `opc-work-request-id` responses, pollable per service (`/20160918`, `/20210201`, `/20180418`, `/20180222` and unversioned `/workRequests`) with errors/logs endpoints |
 
-Not implemented yet: identity domains, API keys/auth tokens, dynamic groups, tag namespaces, object versioning, retention rules (stubbed empty for Terraform compatibility), lifecycle policies, replication, the Amazon S3 Compatibility API, queue consumer groups, stream pools' Kafka settings and connect harnesses, KMS key backup and replication, secret rotation, and pre-built functions (PBF).
+Not implemented yet: identity domains, auth tokens, dynamic groups, tag namespaces, object versioning, retention rules (stubbed empty for Terraform compatibility), lifecycle policies, replication, the Amazon S3 Compatibility API, queue consumer groups, stream pools' Kafka settings and connect harnesses, KMS key backup and replication, secret rotation, and pre-built functions (PBF).
 
 </details>
 
@@ -229,7 +229,7 @@ floci-oci runs a real container where in-process emulation would not be faithful
 | Service | Default image | What is real |
 |---|---|---|
 | Functions | `fnproject/fnserver:latest` | The open-source engine OCI Functions is built on. Your function image runs for real: fnserver spawns it as a sibling container and speaks the FDK http-stream contract |
-| OKE | `rancher/k3s:v<version>-k3s1` | A real Kubernetes cluster per OKE cluster: an agentless k3s control plane on the image of the cluster's version, with a dynamic host port (`6443..6543`) and a named data volume, plus one k3s agent container per worker node, sized from its shape and labelled as OKE labels its nodes |
+| OKE | `rancher/k3s:v<version>-k3s1` | A real Kubernetes cluster per OKE cluster: an agentless k3s control plane on the image of the cluster's version, with a dynamic host port (`6443..6543`) and a named data volume, plus one k3s agent container per worker node, sized from its shape and labelled as OKE labels its nodes, and one small appliance container per LoadBalancer Service holding its address |
 | Database with PostgreSQL | `postgres:{major}-alpine` | A real PostgreSQL server per DB system, of the major the DB system asks for, with TLS, a host port from `15432..15531` and a named data volume; backup dumps are kept by the emulator, outside the containers |
 
 Docker-backed services need the Docker socket:
@@ -278,7 +278,7 @@ Unsigned requests fall back to `FLOCI_OCI_DEFAULT_TENANCY_ID`. Compartments are 
 
 ## SDK Integration
 
-Point your existing OCI SDK at `http://localhost:4599`. Any locally generated RSA key works: the signature is parsed for tenancy/user context, never verified.
+Point your existing OCI SDK at `http://localhost:4599`. Any locally generated RSA key works: the signature is parsed for tenancy/user context, never verified. OKE's kubectl tokens are the exception once their key is uploaded to identity.
 
 <details>
 <summary><strong>Java, oci-java-sdk</strong></summary>
@@ -484,7 +484,8 @@ docker exec floci-oci ocilocal os ns get
 
 `ocilocal` is a thin wrapper that points `oci` at the emulator. The bundled key exists
 only because the OCI CLI refuses to run without one. floci-oci parses request
-signatures but never verifies them, so the key is public by design. Never point that
+signatures but never verifies them (OKE kubectl tokens signed with an uploaded key
+aside), so the key is public by design. Never point that
 config at real OCI.
 
 ### Release train

@@ -42,6 +42,8 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
@@ -56,7 +58,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Driver for real-mode rancher/k3s Docker sidecar containers managing local Kubernetes clusters.
  */
 @ApplicationScoped
-public class OkeClusterManager implements Resettable {
+public class OkeClusterManager implements Resettable, OkeLoadBalancerKube {
 
     private static final Logger LOG = Logger.getLogger(OkeClusterManager.class);
     private static final int K3S_CONTAINER_PORT = 6443;
@@ -69,6 +71,8 @@ public class OkeClusterManager implements Resettable {
     static final String CLUSTER_LABEL = "floci_oke_cluster";
     static final String NODE_POOL_LABEL = "floci_oke_node_pool";
     static final String NODE_VOLUME_LABEL = "floci_oke_node_volume";
+    /** The load balancer mode a server was created with, for whoever inspects it. */
+    static final String LOAD_BALANCER_MODE_LABEL = "io.floci.load-balancer-mode";
     private static final Duration KUBECTL_TIMEOUT = Duration.ofSeconds(30);
     private static final ObjectMapper JSON = new ObjectMapper();
     /** The third octets tried for a cluster's {@code 10.0.X.0/24} node network, from OKE's usual worker subnet up. */
@@ -89,6 +93,7 @@ public class OkeClusterManager implements Resettable {
     static final String WEBHOOK_FILE = TOKEN_DIR + "/token-webhook.yaml";
     static final String WEBHOOK_PATH_PREFIX = "/_floci-oci/oke/token-webhook/";
     private static final Duration PROBE_TIMEOUT = Duration.ofSeconds(3);
+    private static final String EVENT_ENV = "FLOCI_OKE_EVENT";
 
     /**
      * Writes the k3s static token file from {@link #API_TOKEN_ENV} and the token-webhook
@@ -197,6 +202,7 @@ public class OkeClusterManager implements Resettable {
                         .withLabels(ContainerStorageHelper.resourceIdentityLabels(
                                 "oke", cluster.getId(), cluster.getCompartmentId(), clusterRegion(cluster)))
                         .withLabel(CLUSTER_LABEL, cluster.getId())
+                        .withLabel(LOAD_BALANCER_MODE_LABEL, OkeLoadBalancerMode.of(cluster).value())
                         .build();
 
                 lifecycleManager.createAndStart(spec);
@@ -314,11 +320,13 @@ public class OkeClusterManager implements Resettable {
      * and service networks come from the cluster's {@code kubernetesNetworkConfig}, and each node takes a
      * {@code /25} of the pod network, as OKE allocates with flannel. metrics-server is
      * an optional OKE add-on, not deployed by default, so k3s's bundled one stays off; installing the
-     * {@code KubernetesMetricsServer} add-on deploys it.
+     * {@code KubernetesMetricsServer} add-on deploys it. Unless the cluster keeps k3s's servicelb
+     * ({@link OkeLoadBalancerMode}), it is off: servicelb rewrites every LoadBalancer Service's status
+     * from its own pods, so it cannot share that status with floci-oci's load balancer controller.
      */
     static List<String> buildServerArgs(StoredOkeCluster cluster) {
         OkeNetwork.Cidrs cidrs = OkeNetwork.of(cluster.getOptions());
-        return List.of("server",
+        List<String> args = new ArrayList<>(List.of("server",
                 "--disable-agent",
                 "--egress-selector-mode=cluster",
                 "--cluster-cidr=" + cidrs.pods(),
@@ -327,11 +335,16 @@ public class OkeClusterManager implements Resettable {
                 "--kube-controller-manager-arg=node-cidr-mask-size=" + OkeNetwork.NODE_PODS_PREFIX,
                 "--disable=traefik",
                 "--disable=local-storage",
-                "--disable=metrics-server",
+                "--disable=metrics-server"));
+        if (OkeLoadBalancerMode.of(cluster) != OkeLoadBalancerMode.SERVICELB) {
+            args.add("--disable=servicelb");
+        }
+        args.addAll(List.of(
                 "--kube-apiserver-arg=token-auth-file=" + TOKEN_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-config-file=" + WEBHOOK_FILE,
                 "--kube-apiserver-arg=authentication-token-webhook-version=v1",
-                "--kube-apiserver-arg=authentication-token-webhook-cache-ttl=30s");
+                "--kube-apiserver-arg=authentication-token-webhook-cache-ttl=30s"));
+        return List.copyOf(args);
     }
 
     /**
@@ -470,6 +483,11 @@ public class OkeClusterManager implements Resettable {
      * to: the configured {@code services.docker-network}, else floci-oci's own. A sidecar with a
      * published port also sits on {@code bridge}, which floci-oci cannot reach from its network.
      */
+    /** floci-oci's own Docker network, which sidecars join so floci-oci and its other containers reach them. */
+    Optional<String> emulatorNetwork() {
+        return sidecarNetwork();
+    }
+
     private Optional<String> sidecarNetwork() {
         return config.services().dockerNetwork()
                 .filter(n -> !n.isBlank())
@@ -846,6 +864,115 @@ public class OkeClusterManager implements Resettable {
         }
     }
 
+    // ── Load balancer controller's view of the Kubernetes API ───────────────
+
+    @Override
+    public Optional<Snapshot> snapshot(StoredOkeCluster cluster) {
+        ContainerLifecycleManager.ExecResult result = kubectl(cluster,
+                List.of("get", "services,nodes,endpointslices.discovery.k8s.io", "--all-namespaces", "-o", "json"));
+        if (!result.succeeded()) {
+            return Optional.empty();
+        }
+        try {
+            List<JsonNode> services = new ArrayList<>();
+            List<JsonNode> nodes = new ArrayList<>();
+            List<JsonNode> slices = new ArrayList<>();
+            for (JsonNode item : JSON.readTree(result.stdout()).path("items")) {
+                switch (item.path("kind").asText()) {
+                    case "Service" -> services.add(item);
+                    case "Node" -> nodes.add(item);
+                    case "EndpointSlice" -> slices.add(item);
+                    default -> LOG.debugv("Ignoring a {0} in cluster {1}", item.path("kind").asText(), cluster.getId());
+                }
+            }
+            return Optional.of(new Snapshot(services, nodes, slices));
+        } catch (IOException e) {
+            LOG.warnv("Unreadable Service list from cluster {0}: {1}", cluster.getId(), e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    public boolean patchService(StoredOkeCluster cluster, String namespace, String name, String mergePatch) {
+        return kubectl(cluster, List.of("-n", namespace, "patch", "service", name, "--type=merge", "-p", mergePatch))
+                .succeeded();
+    }
+
+    @Override
+    public boolean patchServiceStatus(StoredOkeCluster cluster, String namespace, String name, String mergePatch) {
+        return kubectl(cluster, List.of("-n", namespace, "patch", "service", name, "--subresource=status",
+                "--type=merge", "-p", mergePatch)).succeeded();
+    }
+
+    /**
+     * Creates a core/v1 Event as a cloud controller's recorder does ({@code source.component:
+     * service-controller}). kubectl has no command for that, and exec takes no stdin here, so the
+     * manifest travels in an env var to {@code kubectl create -f -}.
+     */
+    @Override
+    public void event(StoredOkeCluster cluster, OkeLoadBalancerSpec service, String type, String reason,
+                      String message) {
+        String now = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString();
+        Map<String, Object> involved = new LinkedHashMap<>();
+        involved.put("apiVersion", "v1");
+        involved.put("kind", "Service");
+        involved.put("namespace", service.namespace());
+        involved.put("name", service.name());
+        involved.put("uid", service.uid());
+        if (service.resourceVersion() != null) {
+            involved.put("resourceVersion", service.resourceVersion());
+        }
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("apiVersion", "v1");
+        event.put("kind", "Event");
+        event.put("metadata", Map.of("generateName", service.name() + ".", "namespace", service.namespace()));
+        event.put("involvedObject", involved);
+        event.put("reason", reason);
+        event.put("message", message);
+        event.put("type", type);
+        event.put("source", Map.of("component", "service-controller"));
+        event.put("reportingComponent", "service-controller");
+        event.put("reportingInstance", "floci-oci");
+        event.put("firstTimestamp", now);
+        event.put("lastTimestamp", now);
+        event.put("count", 1);
+        try {
+            ContainerLifecycleManager.ExecResult result = lifecycleManager.exec(containerName(cluster),
+                    List.of(EVENT_ENV + "=" + JSON.writeValueAsString(event)),
+                    List.of("sh", "-c", "printf '%s' \"$" + EVENT_ENV + "\" | kubectl create -f -"), KUBECTL_TIMEOUT);
+            if (!result.succeeded()) {
+                LOG.debugv("Event {0} for Service {1}/{2} not recorded: {3}", reason, service.namespace(),
+                        service.name(), result.stderr());
+            }
+        } catch (IOException | RuntimeException e) {
+            LOG.debugv("Event {0} for Service {1}/{2} not recorded: {3}", reason, service.namespace(), service.name(),
+                    e.getMessage());
+        }
+    }
+
+    /** Every load balancer appliance of the cluster, found by label; their addresses go with the cluster. */
+    void removeLoadBalancerAppliances(String clusterId) {
+        boolean removed = false;
+        for (Container container : lifecycleManager.listByLabel(CLUSTER_LABEL, clusterId)) {
+            Map<String, String> labels = container.getLabels() != null ? container.getLabels() : Map.of();
+            if (labels.containsKey(OkeLoadBalancerApplianceManager.SERVICE_LABEL)) {
+                lifecycleManager.removeIfExists(container.getId());
+                removed = true;
+            }
+        }
+        if (removed) {
+            removePublicLoadBalancerNetworkIfUnused();
+        }
+    }
+
+    /** Removes the shared public load balancer network once no appliance is on it. */
+    void removePublicLoadBalancerNetworkIfUnused() {
+        String network = OkeLoadBalancerApplianceManager.publicNetworkName(config);
+        if (lifecycleManager.networkContainerCount(network).filter(count -> count == 0).isPresent()) {
+            lifecycleManager.removeNetwork(network);
+        }
+    }
+
     /** Every agent of the cluster, found by label so one started during a delete goes too. */
     private void removeClusterNodes(String clusterId, boolean dropVolumes) {
         for (Container container : lifecycleManager.listByLabel(CLUSTER_LABEL, clusterId)) {
@@ -900,6 +1027,7 @@ public class OkeClusterManager implements Resettable {
         String volumeName = ref != null ? ref.volumeName() : ContainerStorageHelper.dockerName(config, "oke-vol-" + cluster.getId());
         int hostPort = ref != null && ref.hostPort() > 0 ? ref.hostPort() : cluster.getHostPort();
 
+        removeLoadBalancerAppliances(cluster.getId());
         removeClusterNodes(cluster.getId(), false);
         lifecycleManager.removeIfExists(containerName);
 
@@ -937,6 +1065,7 @@ public class OkeClusterManager implements Resettable {
         for (Map.Entry<String, ActiveClusterRef> entry : activeClusters.entrySet()) {
             ActiveClusterRef ref = entry.getValue();
             try {
+                removeLoadBalancerAppliances(entry.getKey());
                 removeClusterNodes(entry.getKey(), dropVolumes);
                 lifecycleManager.removeIfExists(ref.containerName());
             } catch (Exception e) {

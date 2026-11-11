@@ -5,10 +5,12 @@ import io.floci.oci.core.common.dns.EmbeddedDnsServer;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -147,6 +149,38 @@ class ContainerBuilderTest {
                 .build();
 
         assertEquals("ghcr.io/floci-io/mirror/floci/ami-ubuntu:24.04-arm64", spec.image());
+    }
+
+    @Test
+    void appliancePrimitivesRoundTripIntoSpec() {
+        TestFixture fixture = new TestFixture();
+
+        ContainerSpec spec = fixture.builder.newContainer("alpine")
+                .withCapAdd("NET_ADMIN")
+                .withSysctl("net.ipv4.ip_forward", "1")
+                .withPublishedPort(53, "udp", "127.0.0.1", 0)
+                .withPublishedPort(80, "TCP", "127.0.0.1", 8080)
+                .withNetworkAttachment("cluster-net", "10.0.10.200")
+                .withNetworkAttachment("floci-net", null)
+                .build();
+
+        assertEquals(List.of("NET_ADMIN"), spec.capAdd());
+        assertEquals(Map.of("net.ipv4.ip_forward", "1"), spec.sysctls());
+        assertEquals(List.of(new ContainerSpec.PublishedPort(53, "udp", "127.0.0.1", 0),
+                new ContainerSpec.PublishedPort(80, "tcp", "127.0.0.1", 8080)), spec.publishedPorts());
+        assertEquals(List.of(new ContainerSpec.NetworkAttachment("cluster-net", "10.0.10.200"),
+                new ContainerSpec.NetworkAttachment("floci-net", null)), spec.networkAttachments());
+        assertTrue(spec.hasPortBindings());
+    }
+
+    @Test
+    void appliancePrimitivesDefaultToNone() {
+        ContainerSpec spec = new TestFixture().builder.newContainer("alpine").build();
+
+        assertEquals(List.of(), spec.capAdd());
+        assertEquals(Map.of(), spec.sysctls());
+        assertEquals(List.of(), spec.publishedPorts());
+        assertEquals(List.of(), spec.networkAttachments());
     }
 
     private static class TestFixture {

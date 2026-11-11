@@ -411,6 +411,43 @@ class OkeClusterManagerTest {
         assertNull(cluster.getLifecycleState(), "real mode leaves ACTIVE to the readiness poller");
     }
 
+    @Test
+    void serverArgsDisableServicelbWhenTheEmulatorOwnsLoadBalancerStatus() {
+        StoredOkeCluster cluster = new StoredOkeCluster();
+        cluster.setId("ocid1.cluster.oc1.iad.lbmode001");
+
+        cluster.setLoadBalancerMode("emulated");
+        assertTrue(OkeClusterManager.buildServerArgs(cluster).contains("--disable=servicelb"));
+        cluster.setLoadBalancerMode("off");
+        assertTrue(OkeClusterManager.buildServerArgs(cluster).contains("--disable=servicelb"));
+        cluster.setLoadBalancerMode("servicelb");
+        assertFalse(OkeClusterManager.buildServerArgs(cluster).contains("--disable=servicelb"));
+    }
+
+    @Test
+    void aClusterStoredWithoutALoadBalancerModeKeepsServicelbAndItsServer() {
+        // Stored by round 1: recreating its server with other flags would take its Services' addresses away.
+        StoredOkeCluster cluster = new StoredOkeCluster();
+        cluster.setId("ocid1.cluster.oc1.iad.lbmode002");
+
+        assertFalse(OkeClusterManager.buildServerArgs(cluster).contains("--disable=servicelb"));
+        assertEquals(OkeLoadBalancerMode.SERVICELB, OkeLoadBalancerMode.of(cluster));
+    }
+
+    @Test
+    void theServerIsLabelledWithItsLoadBalancerMode() {
+        when(portAllocator.allocate(6443, 6543)).thenReturn(6443);
+        when(lifecycleManager.createAndStart(any())).thenReturn(new ContainerLifecycleManager.ContainerInfo("c-lb", Map.of()));
+        StoredOkeCluster cluster = new StoredOkeCluster();
+        cluster.setId("ocid1.cluster.oc1.iad.lbmode003");
+        cluster.setApiToken("token-lbmode003");
+        cluster.setLoadBalancerMode("emulated");
+
+        manager.startCluster(cluster);
+
+        verify(specBuilder).withLabel(OkeClusterManager.LOAD_BALANCER_MODE_LABEL, "emulated");
+    }
+
     private StoredNodePool agentPool(String shape) {
         StoredNodePool pool = new StoredNodePool();
         pool.setId("ocid1.nodepool.oc1.iad.agentpool");
@@ -840,7 +877,8 @@ class OkeClusterManagerTest {
                         "io.floci.resource-id", "ocid1.cluster.oc1.iad.labelled001",
                         "io.floci.compartment", "ocid1.compartment.oc1..labelled",
                         "io.floci.region", "us-ashburn-1",
-                        OkeClusterManager.CLUSTER_LABEL, "ocid1.cluster.oc1.iad.labelled001"),
+                        OkeClusterManager.CLUSTER_LABEL, "ocid1.cluster.oc1.iad.labelled001",
+                        OkeClusterManager.LOAD_BALANCER_MODE_LABEL, "servicelb"),
                 spec.getValue().labels());
         assertEquals(ContainerStorageHelper.dockerName(config, "oke-net-" + cluster.getId()),
                 spec.getValue().primaryNetwork(), "k3s must start on the cluster network to advertise an address on it");

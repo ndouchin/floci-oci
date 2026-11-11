@@ -9,6 +9,8 @@ import io.floci.oci.core.storage.StorageBackend;
 import io.floci.oci.core.storage.TenancyAwareStorageBackend;
 import io.floci.oci.core.workrequest.StoredWorkRequest;
 import io.floci.oci.core.workrequest.WorkRequestService;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.floci.oci.services.oke.model.StoredLoadBalancer;
 import io.floci.oci.services.oke.model.StoredNode;
 import io.floci.oci.services.oke.model.StoredNodePool;
 import io.floci.oci.services.oke.model.StoredOkeCluster;
@@ -83,6 +85,24 @@ class OkeServiceTest {
 
         StoredOkeCluster fetched = service.getCluster(cluster.getId());
         assertEquals(cluster.getId(), fetched.getId());
+    }
+
+    @Test
+    void aRealModeClusterRecordsTheConfiguredLoadBalancerMode() {
+        EmulatorConfig config = mock(EmulatorConfig.class, RETURNS_DEEP_STUBS);
+        lenient().when(config.defaultRealm()).thenReturn("oc1");
+        lenient().when(config.defaultRegion()).thenReturn("us-ashburn-1");
+        lenient().when(config.services().oke().mock()).thenReturn(false);
+        lenient().when(config.services().oke().loadBalancer().mode()).thenReturn("off");
+        OkeClusterManager manager = mock(OkeClusterManager.class);
+        OkeService real = new OkeService(new InMemoryStorage<>(), new InMemoryStorage<>(), config, null,
+                mock(WorkRequestService.class), manager);
+
+        StoredOkeCluster cluster = real.createCluster(COMPARTMENT, "lb-mode", VCN, OkeVersions.DEFAULT_VERSION,
+                null, null, null).cluster();
+
+        assertEquals("off", cluster.getLoadBalancerMode());
+        verify(manager).startCluster(argThat(started -> "off".equals(started.getLoadBalancerMode())));
     }
 
     @Test
@@ -477,6 +497,7 @@ class OkeServiceTest {
         lenient().when(realConfig.services().oke().mock()).thenReturn(false);
         lenient().when(realConfig.services().oke().readyTimeoutSeconds()).thenReturn(300);
         lenient().when(realConfig.services().oke().maxNodesPerCluster()).thenReturn(3);
+        lenient().when(realConfig.services().oke().loadBalancer().mode()).thenReturn("emulated");
         readinessManager = mock(OkeClusterManager.class);
         realWorkRequests = new WorkRequestService(new InMemoryStorage<>(), realConfig);
         clock = new MutableClock(Instant.parse("2026-10-01T12:00:00Z"));
@@ -948,6 +969,187 @@ class OkeServiceTest {
         service.pollReadiness();
         assertEquals("ACTIVE", service.getCluster(ready.getId()).getLifecycleState());
         assertEquals("TkVXQ0E=", service.getCluster(ready.getId()).getCaCertificate());
+    }
+
+    // ── Load balancer records (real mode) ──────────────────────────────────
+
+    private OkeLoadBalancerAppliances lbAppliances;
+    private InMemoryStorage<String, StoredLoadBalancer> loadBalancers;
+
+    private OkeService loadBalancerService() {
+        EmulatorConfig realConfig = mock(EmulatorConfig.class, RETURNS_DEEP_STUBS);
+        lenient().when(realConfig.defaultRealm()).thenReturn("oc1");
+        lenient().when(realConfig.defaultRegion()).thenReturn("us-ashburn-1");
+        lenient().when(realConfig.services().oke().mock()).thenReturn(false);
+        lenient().when(realConfig.services().oke().readyTimeoutSeconds()).thenReturn(300);
+        lenient().when(realConfig.services().oke().maxNodesPerCluster()).thenReturn(5);
+        lenient().when(realConfig.services().oke().loadBalancer().mode()).thenReturn("emulated");
+        lenient().when(realConfig.services().oke().loadBalancer().publicCidr()).thenReturn("192.0.2.0/24");
+        lenient().when(realConfig.services().oke().loadBalancer().provisioningDelaySeconds()).thenReturn(0);
+        readinessManager = mock(OkeClusterManager.class);
+        lbAppliances = mock(OkeLoadBalancerAppliances.class);
+        lenient().when(lbAppliances.nameFor(any())).thenAnswer(invocation -> "lb-" + invocation.getArgument(0));
+        lenient().when(lbAppliances.ensure(any(), any())).thenReturn(Map.of("TCP/80", 41080));
+        loadBalancers = new InMemoryStorage<>();
+        realWorkRequests = new WorkRequestService(new InMemoryStorage<>(), realConfig);
+        clock = new MutableClock(Instant.parse("2026-10-01T12:00:00Z"));
+        return new OkeService(clusters, nodePools, loadBalancers, realConfig, null, realWorkRequests, readinessManager,
+                lbAppliances, () -> TENANCY, clock, OciContext.fromConfig(realConfig), null);
+    }
+
+    private StoredOkeCluster activeEmulatedCluster(String id) {
+        StoredOkeCluster cluster = storedCluster(id, "Q0E=");
+        cluster.setTenancyId(TENANCY);
+        cluster.setRegion("us-ashburn-1");
+        cluster.setCompartmentId(COMPARTMENT);
+        cluster.setKubernetesVersion(OkeVersions.DEFAULT_VERSION);
+        cluster.setNodeSubnet("10.0.10.0/24");
+        cluster.setLoadBalancerMode("emulated");
+        cluster.setApiToken("token");
+        clusters.put(id, cluster);
+        return cluster;
+    }
+
+    @Test
+    void aStoredLoadBalancerKeepsItsAddressAndGetsItsApplianceBackAfterARestart() {
+        OkeService service = loadBalancerService();
+        StoredOkeCluster cluster = activeEmulatedCluster("ocid1.cluster.oc1.iad.lbrestart");
+        StoredLoadBalancer stored = new StoredLoadBalancer();
+        stored.setClusterId(cluster.getId());
+        stored.setServiceUid("uid-1");
+        stored.setNamespace("default");
+        stored.setName("web");
+        stored.setKind("lb");
+        stored.setPublicIp("192.0.2.42");
+        stored.setApplianceName("lb-uid-1");
+        stored.setHostPorts(Map.of("TCP/80", 41080));
+        stored.setFirstSeen("2026-10-01T11:00:00Z");
+        stored.setEnsured(true);
+        loadBalancers.put(cluster.getId() + "/uid-1", stored);
+        ObjectNode web = OkeLoadBalancerSpecTest.service(Map.of(
+                OkeLoadBalancerSpec.HOST_PORTS_ANNOTATION, "TCP/80=127.0.0.1:41080"));
+        ((ObjectNode) web.get("metadata")).putArray("finalizers").add(OkeLoadBalancerSpec.CLEANUP_FINALIZER);
+        web.putObject("status").putObject("loadBalancer").putArray("ingress").addObject()
+                .put("ip", "192.0.2.42").put("ipMode", "VIP");
+        when(readinessManager.snapshot(any())).thenReturn(Optional.of(
+                new OkeLoadBalancerKube.Snapshot(List.of(web), List.of(), List.of())));
+
+        service.reconstructClusterState();
+        service.pollLoadBalancers();
+
+        verify(lbAppliances).ensure(any(), argThat(spec -> "192.0.2.42".equals(spec.publicIp())
+                && "lb-uid-1".equals(spec.name()) && Map.of("TCP/80", 41080).equals(spec.preferredHostPorts())));
+        verify(readinessManager, never()).patchServiceStatus(any(), any(), any(), any());
+        assertEquals("192.0.2.42", service.loadBalancerRecords(cluster).getFirst().getPublicIp());
+    }
+
+    @Test
+    void publicAddressesAreUniqueAcrossClustersAndAReservationIsKept() {
+        OkeService service = loadBalancerService();
+        StoredOkeCluster first = activeEmulatedCluster("ocid1.cluster.oc1.iad.lbfirst");
+        StoredOkeCluster second = activeEmulatedCluster("ocid1.cluster.oc1.iad.lbsecond");
+        OkeLoadBalancerSpec spec = OkeLoadBalancerSpec.from(OkeLoadBalancerSpecTest.service(Map.of()));
+
+        OkeLoadBalancerRecords.Reservation a = service.reserve(first, spec, clock.instant());
+        OkeLoadBalancerRecords.Reservation b = service.reserve(second, spec, clock.instant());
+        OkeLoadBalancerRecords.Reservation again = service.reserve(first, spec, clock.instant());
+
+        assertEquals("192.0.2.10", a.record().getPublicIp());
+        assertEquals("192.0.2.11", b.record().getPublicIp());
+        assertTrue(a.changed());
+        assertFalse(again.changed());
+        assertEquals("192.0.2.10", again.record().getPublicIp());
+    }
+
+    @Test
+    void nodesAndInternalLoadBalancersNeverShareAnAddress() {
+        OkeService service = loadBalancerService();
+        StoredOkeCluster cluster = activeEmulatedCluster("ocid1.cluster.oc1.iad.lbnodes");
+        OkeLoadBalancerSpec internal = OkeLoadBalancerSpec.from(OkeLoadBalancerSpecTest.service(Map.of(
+                "service.beta.kubernetes.io/oci-load-balancer-internal", "true")));
+        assertEquals("10.0.10.254", service.reserve(cluster, internal, clock.instant()).record().getPrivateIp());
+        StoredLoadBalancer low = new StoredLoadBalancer();
+        low.setClusterId(cluster.getId());
+        low.setServiceUid("uid-low");
+        low.setKind("nlb");
+        low.setInternal(true);
+        low.setPrivateIp("10.0.10.16");
+        low.setFirstSeen(clock.instant().toString());
+        loadBalancers.put(cluster.getId() + "/uid-low", low);
+
+        StoredNodePool pool = service.createNodePool(COMPARTMENT, cluster.getId(), "workers", null,
+                "VM.Standard.E4.Flex", null, null, null, placedIn(2)).nodePool();
+
+        assertEquals(List.of("10.0.10.17", "10.0.10.18"),
+                pool.getNodes().stream().map(StoredNode::getPrivateIp).toList());
+    }
+
+    @Test
+    void anAddressTheServiceAsksForMustBeFreeAndInRange() {
+        OkeService service = loadBalancerService();
+        StoredOkeCluster cluster = activeEmulatedCluster("ocid1.cluster.oc1.iad.lbrequested");
+        ObjectNode outside = OkeLoadBalancerSpecTest.service(Map.of());
+        ((ObjectNode) outside.get("spec")).put("loadBalancerIP", "198.51.100.7");
+        ObjectNode reserved = OkeLoadBalancerSpecTest.service(Map.of());
+        ((ObjectNode) reserved.get("spec")).put("loadBalancerIP", "192.0.2.50");
+        ObjectNode same = OkeLoadBalancerSpecTest.service(Map.of());
+        ((ObjectNode) same.get("spec")).put("loadBalancerIP", "192.0.2.50");
+        ((ObjectNode) same.get("metadata")).put("uid", "uid-2");
+        ObjectNode assigned = OkeLoadBalancerSpecTest.service(Map.of(
+                "oci.oraclecloud.com/load-balancer-type", "nlb",
+                "oci-network-load-balancer.oraclecloud.com/internal", "true",
+                "oci-network-load-balancer.oraclecloud.com/assigned-private-ipv4", "10.0.10.100"));
+        ((ObjectNode) assigned.get("metadata")).put("uid", "uid-3");
+
+        assertEquals("loadBalancerIP 198.51.100.7 is not a free address of floci-oci's public load balancer range"
+                + " 192.0.2.0/24", assertThrows(IllegalStateException.class,
+                () -> service.reserve(cluster, OkeLoadBalancerSpec.from(outside), clock.instant())).getMessage());
+        assertEquals("192.0.2.50",
+                service.reserve(cluster, OkeLoadBalancerSpec.from(reserved), clock.instant()).record().getPublicIp());
+        assertThrows(IllegalStateException.class,
+                () -> service.reserve(cluster, OkeLoadBalancerSpec.from(same), clock.instant()));
+        assertEquals("10.0.10.100",
+                service.reserve(cluster, OkeLoadBalancerSpec.from(assigned), clock.instant()).record().getPrivateIp());
+    }
+
+    @Test
+    void changingAServiceToInternalMovesItsLoadBalancerToAPrivateAddress() {
+        OkeService service = loadBalancerService();
+        StoredOkeCluster cluster = activeEmulatedCluster("ocid1.cluster.oc1.iad.lbtoggle");
+        service.reserve(cluster, OkeLoadBalancerSpec.from(OkeLoadBalancerSpecTest.service(Map.of())), clock.instant());
+
+        OkeLoadBalancerRecords.Reservation internal = service.reserve(cluster, OkeLoadBalancerSpec.from(
+                OkeLoadBalancerSpecTest.service(Map.of("service.beta.kubernetes.io/oci-load-balancer-internal", "true"))),
+                clock.instant());
+
+        assertTrue(internal.changed());
+        assertNull(internal.record().getPublicIp());
+        assertEquals("10.0.10.254", internal.record().getPrivateIp());
+        assertEquals(1, service.loadBalancerRecords(cluster).size());
+    }
+
+    @Test
+    void deletingAClusterDropsItsLoadBalancerRecords() {
+        OkeService service = loadBalancerService();
+        StoredOkeCluster cluster = activeEmulatedCluster("ocid1.cluster.oc1.iad.lbdelete");
+        service.reserve(cluster, OkeLoadBalancerSpec.from(OkeLoadBalancerSpecTest.service(Map.of())), clock.instant());
+
+        service.deleteCluster(cluster.getId());
+
+        assertTrue(loadBalancers.keys().isEmpty());
+    }
+
+    @Test
+    void onlyActiveEmulatedClustersAreReconciled() {
+        OkeService service = loadBalancerService();
+        StoredOkeCluster legacy = activeEmulatedCluster("ocid1.cluster.oc1.iad.lblegacy");
+        legacy.setLoadBalancerMode(null);
+        StoredOkeCluster creating = activeEmulatedCluster("ocid1.cluster.oc1.iad.lbcreating");
+        creating.setLifecycleState("CREATING");
+
+        service.pollLoadBalancers();
+
+        verify(readinessManager, never()).snapshot(any());
     }
 
     private StoredOkeCluster storedCluster(String id, String caCertificate) {

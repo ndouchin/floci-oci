@@ -357,6 +357,60 @@ public interface EmulatorConfig {
              */
             @WithDefault("300")
             int readyTimeoutSeconds();
+
+            /**
+             * How the token webhook checks the signature of {@code oci ce cluster generate-token}
+             * tokens. {@code known-keys}: a token signed with an API key uploaded to identity (or with
+             * the session key of a known user's session token) is verified and its caller mapped as
+             * OKE maps IAM users (user OCID, IAM group OCIDs, {@code system:masters} only for
+             * {@code manage clusters} holders); a token signed with any other key is accepted as
+             * cluster-admin, as before. {@code strict}: only verified tokens are accepted. {@code off}:
+             * signatures are never checked and every caller is cluster-admin.
+             * Env: FLOCI_OCI_SERVICES_OKE_TOKEN_VERIFICATION
+             */
+            @WithDefault("known-keys")
+            String tokenVerification();
+
+            /** Services of type LoadBalancer in real-mode clusters. */
+            LoadBalancerConfig loadBalancer();
+
+            interface LoadBalancerConfig {
+                /**
+                 * Who answers Services of type LoadBalancer in clusters created from now on.
+                 * {@code emulated}: k3s's servicelb is off and floci-oci writes an OCI-shaped address
+                 * into each Service's status, held by one appliance container per Service.
+                 * {@code servicelb}: k3s's servicelb publishes the node addresses. {@code off}: no
+                 * one does, Services stay pending. A cluster keeps the mode it was created with.
+                 * Env: FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_MODE
+                 */
+                @WithDefault("emulated")
+                String mode();
+
+                /**
+                 * Seconds between a Service asking for a load balancer and its address appearing,
+                 * to mimic OKE's "few minutes". Env: FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_PROVISIONING_DELAY_SECONDS
+                 */
+                @WithDefault("0")
+                int provisioningDelaySeconds();
+
+                /**
+                 * Where public load balancer addresses come from, shared by every cluster: an RFC 5737
+                 * documentation range, never routed, the one Oracle's examples use.
+                 * Env: FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_PUBLIC_CIDR
+                 */
+                @WithDefault("192.0.2.0/24")
+                String publicCidr();
+
+                /**
+                 * How each Service port is published on the Docker host's {@code 127.0.0.1}:
+                 * {@code dynamic} (a free port, reported in the Service's
+                 * {@code floci.io/load-balancer-host-ports} annotation), {@code same-as-service}
+                 * (the Service's own port when free) or {@code none}.
+                 * Env: FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_HOST_PORTS
+                 */
+                @WithDefault("dynamic")
+                String hostPorts();
+            }
         }
     }
 
