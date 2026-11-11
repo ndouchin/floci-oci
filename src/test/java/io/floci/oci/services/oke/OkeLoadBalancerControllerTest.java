@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -452,6 +453,7 @@ class OkeLoadBalancerControllerTest {
 
         private final Map<String, Appliance> byName = new LinkedHashMap<>();
         private int created;
+        private String taken;
 
         Appliance only() {
             assertEquals(1, byName.size(), byName::toString);
@@ -465,6 +467,9 @@ class OkeLoadBalancerControllerTest {
 
         @Override
         public Map<String, Integer> ensure(StoredOkeCluster cluster, Spec spec) {
+            if (spec.publicIp() != null && spec.publicIp().equals(taken)) {
+                throw new AddressInUseException(List.of(spec.publicIp()), new RuntimeException("Address already in use"));
+            }
             Appliance existing = byName.get(spec.name());
             if (existing != null && spec.sameAppliance(existing.spec())) {
                 return existing.hostPorts();
@@ -492,6 +497,12 @@ class OkeLoadBalancerControllerTest {
     /** Records kept in memory, with the address rules of {@link OkeLoadBalancerAddresses}. */
     private static final class FakeRecords implements OkeLoadBalancerRecords {
         private final Map<String, StoredLoadBalancer> records = new LinkedHashMap<>();
+        private final Set<String> avoided = new HashSet<>();
+
+        @Override
+        public void avoid(Collection<String> addresses) {
+            avoided.addAll(addresses);
+        }
 
         @Override
         public List<StoredLoadBalancer> list(StoredOkeCluster cluster) {
@@ -509,7 +520,7 @@ class OkeLoadBalancerControllerTest {
                 throw new IllegalStateException("loadBalancerIP " + spec.requestedPublicIp()
                         + " is not a free address of floci-oci's public load balancer range 192.0.2.0/24");
             }
-            Set<String> used = new HashSet<>();
+            Set<String> used = new HashSet<>(avoided);
             records.values().forEach(r -> {
                 used.add(r.getPublicIp());
                 used.add(r.getPrivateIp());
@@ -540,6 +551,20 @@ class OkeLoadBalancerControllerTest {
         public void release(StoredOkeCluster cluster, String serviceUid) {
             records.remove(serviceUid);
         }
+    }
+
+    @Test
+    void anAddressDockerSaysIsTakenIsAvoidedOnTheNextPass() {
+        kube.service(OkeLoadBalancerSpecTest.service(Map.of()));
+        appliances.taken = "192.0.2.10";
+        OkeLoadBalancerController controller = controller(0);
+
+        controller.reconcile(cluster, agents);
+        assertTrue(kube.events.getLast().startsWith("Warning/SyncLoadBalancerFailed/"), kube.events::toString);
+        assertTrue(records.list(cluster).isEmpty());
+
+        controller.reconcile(cluster, agents);
+        assertEquals("192.0.2.11", kube.service("uid-1").at("/status/loadBalancer/ingress/0/ip").asText());
     }
 
     @Test

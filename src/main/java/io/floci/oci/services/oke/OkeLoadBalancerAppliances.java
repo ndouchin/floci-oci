@@ -27,6 +27,20 @@ interface OkeLoadBalancerAppliances {
         }
     }
 
+    /** Docker refused an appliance an address because something else on its network holds it. */
+    final class AddressInUseException extends RuntimeException {
+        private final List<String> addresses;
+
+        AddressInUseException(List<String> addresses, Throwable cause) {
+            super("address " + String.join(" or ", addresses) + " is already in use on its Docker network", cause);
+            this.addresses = List.copyOf(addresses);
+        }
+
+        List<String> addresses() {
+            return addresses;
+        }
+    }
+
     String nameFor(String serviceUid);
 
     /**

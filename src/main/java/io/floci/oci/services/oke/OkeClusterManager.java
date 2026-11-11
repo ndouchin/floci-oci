@@ -480,6 +480,11 @@ public class OkeClusterManager implements Resettable {
      * to: the configured {@code services.docker-network}, else floci-oci's own. A sidecar with a
      * published port also sits on {@code bridge}, which floci-oci cannot reach from its network.
      */
+    /** floci-oci's own Docker network, which sidecars join so floci-oci and its other containers reach them. */
+    Optional<String> emulatorNetwork() {
+        return sidecarNetwork();
+    }
+
     private Optional<String> sidecarNetwork() {
         return config.services().dockerNetwork()
                 .filter(n -> !n.isBlank())
@@ -856,6 +861,29 @@ public class OkeClusterManager implements Resettable {
         }
     }
 
+    /** Every load balancer appliance of the cluster, found by label; their addresses go with the cluster. */
+    void removeLoadBalancerAppliances(String clusterId) {
+        boolean removed = false;
+        for (Container container : lifecycleManager.listByLabel(CLUSTER_LABEL, clusterId)) {
+            Map<String, String> labels = container.getLabels() != null ? container.getLabels() : Map.of();
+            if (labels.containsKey(OkeLoadBalancerApplianceManager.SERVICE_LABEL)) {
+                lifecycleManager.removeIfExists(container.getId());
+                removed = true;
+            }
+        }
+        if (removed) {
+            removePublicLoadBalancerNetworkIfUnused();
+        }
+    }
+
+    /** Removes the shared public load balancer network once no appliance is on it. */
+    void removePublicLoadBalancerNetworkIfUnused() {
+        String network = OkeLoadBalancerApplianceManager.publicNetworkName(config);
+        if (lifecycleManager.networkContainerCount(network).filter(count -> count == 0).isPresent()) {
+            lifecycleManager.removeNetwork(network);
+        }
+    }
+
     /** Every agent of the cluster, found by label so one started during a delete goes too. */
     private void removeClusterNodes(String clusterId, boolean dropVolumes) {
         for (Container container : lifecycleManager.listByLabel(CLUSTER_LABEL, clusterId)) {
@@ -910,6 +938,7 @@ public class OkeClusterManager implements Resettable {
         String volumeName = ref != null ? ref.volumeName() : ContainerStorageHelper.dockerName(config, "oke-vol-" + cluster.getId());
         int hostPort = ref != null && ref.hostPort() > 0 ? ref.hostPort() : cluster.getHostPort();
 
+        removeLoadBalancerAppliances(cluster.getId());
         removeClusterNodes(cluster.getId(), false);
         lifecycleManager.removeIfExists(containerName);
 
@@ -947,6 +976,7 @@ public class OkeClusterManager implements Resettable {
         for (Map.Entry<String, ActiveClusterRef> entry : activeClusters.entrySet()) {
             ActiveClusterRef ref = entry.getValue();
             try {
+                removeLoadBalancerAppliances(entry.getKey());
                 removeClusterNodes(entry.getKey(), dropVolumes);
                 lifecycleManager.removeIfExists(ref.containerName());
             } catch (Exception e) {

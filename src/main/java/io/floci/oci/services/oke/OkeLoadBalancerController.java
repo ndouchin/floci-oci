@@ -92,6 +92,10 @@ final class OkeLoadBalancerController {
                 } else {
                     ensure(cluster, spec, backendNodes, snapshot.endpointSlices());
                 }
+            } catch (OkeLoadBalancerAppliances.AddressInUseException e) {
+                records.avoid(e.addresses());
+                records.release(cluster, spec.uid());
+                failed(cluster, spec, e.getMessage() + "; another address is picked on the next sync");
             } catch (RuntimeException e) {
                 LOG.debugv(e, "Load balancer of Service {0}/{1} in cluster {2} not synced", spec.namespace(),
                         spec.name(), cluster.getId());

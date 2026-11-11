@@ -4,6 +4,7 @@ import io.floci.oci.services.oke.model.StoredLoadBalancer;
 import io.floci.oci.services.oke.model.StoredOkeCluster;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 
 /** The stored load balancers of a cluster, and the addresses they hold. */
@@ -26,4 +27,7 @@ interface OkeLoadBalancerRecords {
     void save(StoredOkeCluster cluster, StoredLoadBalancer record);
 
     void release(StoredOkeCluster cluster, String serviceUid);
+
+    /** Keeps {@code addresses} out of later reservations: Docker says something outside floci-oci's records holds them. */
+    void avoid(Collection<String> addresses);
 }
