@@ -8,8 +8,6 @@ import io.floci.oci.testing.TestKeys;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.net.URLDecoder;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.PublicKey;
@@ -196,7 +194,7 @@ class OkeTokenValidatorTest {
     @Test
     void aRegisteredKeyWithABadSignatureIsRejectedWhereverSignaturesAreVerified() {
         FakeDirectory keys = registeredMinterKey();
-        String tampered = tamperSignature(ClusterTokenMinter.mint(REGION, CLUSTER_ID, TENANCY, USER, NOW));
+        String tampered = ClusterTokenMinter.tamperSignature(ClusterTokenMinter.mint(REGION, CLUSTER_ID, TENANCY, USER, NOW));
 
         assertTrue(validator(keys, OkeTokenVerification.KNOWN_KEYS).validate(tampered, cluster).isEmpty());
         assertTrue(validator(keys, OkeTokenVerification.STRICT).validate(tampered, cluster).isEmpty());
@@ -323,20 +321,6 @@ class OkeTokenValidatorTest {
         stored.setRegion(region);
         stored.setTenancyId(tenancy);
         return stored;
-    }
-
-    /** Changes one character of the signature, keeping it valid base64 of the same length. */
-    private static String tamperSignature(String token) {
-        String url = decoded(token);
-        int query = url.indexOf("?authorization=") + "?authorization=".length();
-        int end = url.indexOf("&date=");
-        String authorization = URLDecoder.decode(url.substring(query, end), StandardCharsets.UTF_8);
-        int signature = authorization.indexOf("signature=\"") + "signature=\"".length();
-        char original = authorization.charAt(signature + 10);
-        String tampered = authorization.substring(0, signature + 10) + (original == 'A' ? 'B' : 'A')
-                + authorization.substring(signature + 11);
-        return ClusterTokenMinter.encode(url.substring(0, query)
-                + URLEncoder.encode(tampered, StandardCharsets.UTF_8) + url.substring(end));
     }
 
     private static final class FakeDirectory implements OkeKeyDirectory {

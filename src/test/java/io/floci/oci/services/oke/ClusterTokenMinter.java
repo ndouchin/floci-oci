@@ -4,6 +4,7 @@ import io.floci.oci.core.auth.OciRequestSignature;
 import io.floci.oci.testing.TestKeys;
 
 import java.math.BigInteger;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
@@ -84,6 +85,20 @@ final class ClusterTokenMinter {
         return "{\"kty\":\"RSA\",\"n\":\"" + url.encodeToString(unsigned(publicKey.getModulus()))
                 + "\",\"e\":\"" + url.encodeToString(unsigned(publicKey.getPublicExponent()))
                 + "\",\"kid\":\"Ignored\"}";
+    }
+
+    /** The token with one character of its signature changed, still valid base64 of the same length. */
+    static String tamperSignature(String token) {
+        String url = new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8);
+        int query = url.indexOf("?authorization=") + "?authorization=".length();
+        int end = url.indexOf("&date=");
+        String authorization = URLDecoder.decode(url.substring(query, end), StandardCharsets.UTF_8);
+        int signature = authorization.indexOf("signature=\"") + "signature=\"".length();
+        char original = authorization.charAt(signature + 10);
+        String tampered = authorization.substring(0, signature + 10) + (original == 'A' ? 'B' : 'A')
+                + authorization.substring(signature + 11);
+        return encode(url.substring(0, query) + URLEncoder.encode(tampered, StandardCharsets.UTF_8)
+                + url.substring(end));
     }
 
     static String authorization(String keyId, String signature) {

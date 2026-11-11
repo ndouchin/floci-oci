@@ -10,7 +10,6 @@ import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -33,11 +32,13 @@ public class OkeTokenWebhookController {
 
     private final OkeService service;
     private final OkeTokenValidator validator;
+    private final OkeIdentityMapper mapper;
 
     @Inject
-    public OkeTokenWebhookController(OkeService service, OkeTokenValidator validator) {
+    public OkeTokenWebhookController(OkeService service, OkeTokenValidator validator, OkeIdentityMapper mapper) {
         this.service = service;
         this.validator = validator;
+        this.mapper = mapper;
     }
 
     /**
@@ -69,9 +70,6 @@ public class OkeTokenWebhookController {
                 "kind", "TokenReview",
                 "status", Map.of(
                         "authenticated", true,
-                        "user", Map.of(
-                                "username", caller.get().principalId(),
-                                "uid", caller.get().principalId(),
-                                "groups", List.of("system:masters", "system:authenticated"))))).build();
+                        "user", mapper.map(caller.get(), cluster.get()).toWire()))).build();
     }
 }
