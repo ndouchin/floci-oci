@@ -1,0 +1,2102 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Fast, free, open-source local Oracle Cloud (OCI) emulator">
+      
+      
+      
+        <link rel="canonical" href="https://floci.io/floci-oci/services/containerengine/">
+      
+      
+        <link rel="prev" href="../functions/">
+      
+      
+        <link rel="next" href="../psql/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/floci.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
+    
+    
+      
+        <title>Container Engine (OKE) - floci-oci</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  
+  <script defer src="https://cloud.umami.is/script.js" data-website-id="b2ab8ccd-4619-4b94-bfa6-e8870961d6eb"></script>
+
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#container-engine-for-kubernetes-oke" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="floci-oci" class="md-header__button md-logo" aria-label="floci-oci" data-md-component="logo">
+      
+  <img src="../../assets/floci-header.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            floci-oci
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Container Engine (OKE)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/floci-io/floci-oci" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    floci-io/floci-oci
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/quick-start/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../configuration/environment-variables/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+  Services
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../contributing/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Contributing
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="floci-oci" class="md-nav__button md-logo" aria-label="floci-oci" data-md-component="logo">
+      
+  <img src="../../assets/floci-header.svg" alt="logo">
+
+    </a>
+    floci-oci
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/floci-io/floci-oci" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    floci-io/floci-oci
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/oci-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OCI CLI & SDK Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../configuration/environment-variables/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Environment Variables
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../configuration/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage Modes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../configuration/initialization-hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Initialization Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Services
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../identity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Identity (IAM)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../object-storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Queue
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../kms-vault/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Vault, KMS & Secrets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../streaming/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../functions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Container Engine (OKE)
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Container Engine (OKE)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#service-api-sdk-client" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Service / API / SDK Client
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#supported-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported Operations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#kubernetes-versions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Kubernetes Versions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#real-mode-runtime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-Mode Runtime
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Real-Mode Runtime">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#control-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Control plane
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#node-pools-as-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node pools as nodes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#node-names-labels-and-provider-id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node names, labels and provider ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#networking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Networking
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#loadbalancer-services" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LoadBalancer Services
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cluster-add-ons" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cluster add-ons
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#restore-at-startup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Restore at startup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#authentication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Authentication
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#persistence-mock-mode-and-teardown" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persistence, mock mode and teardown
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wire-behavior-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wire &amp; Behavior Notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-floci-oci-decides-where-oracle-is-silent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What floci-oci decides where Oracle is silent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sources
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quickstart" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quickstart
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../psql/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Database with PostgreSQL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../organizations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Organizations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../governance-rules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Governance Rules
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#service-api-sdk-client" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Service / API / SDK Client
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#supported-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Supported Operations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#kubernetes-versions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Kubernetes Versions
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#real-mode-runtime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Real-Mode Runtime
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Real-Mode Runtime">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#control-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Control plane
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#node-pools-as-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node pools as nodes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#node-names-labels-and-provider-id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Node names, labels and provider ID
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#storage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#networking" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Networking
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#loadbalancer-services" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LoadBalancer Services
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cluster-add-ons" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cluster add-ons
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#restore-at-startup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Restore at startup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#authentication" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Authentication
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#persistence-mock-mode-and-teardown" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persistence, mock mode and teardown
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wire-behavior-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Wire &amp; Behavior Notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-floci-oci-decides-where-oracle-is-silent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What floci-oci decides where Oracle is silent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sources
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quickstart" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quickstart
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="container-engine-for-kubernetes-oke">Container Engine for Kubernetes (OKE)</h1>
+<p>The <strong>Oracle Cloud Infrastructure (OCI) Container Engine for Kubernetes (OKE)</strong> emulator service provides cluster, node pool and cluster add-on lifecycle management, kubeconfig generation, and, in real mode, a local Kubernetes cluster per OKE cluster: a k3s control plane plus one k3s agent container per worker node.</p>
+<h2 id="service-api-sdk-client">Service / API / SDK Client</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>API Endpoint</th>
+<th>SDK Client</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>OKE Clusters</td>
+<td><code>/20180222/clusters</code></td>
+<td><code>ContainerEngineClient</code></td>
+</tr>
+<tr>
+<td>OKE Cluster Add-ons</td>
+<td><code>/20180222/clusters/{clusterId}/addons</code>, <code>/20180222/addonOptions</code></td>
+<td><code>ContainerEngineClient</code></td>
+</tr>
+<tr>
+<td>OKE Node Pools</td>
+<td><code>/20180222/nodePools</code></td>
+<td><code>ContainerEngineClient</code></td>
+</tr>
+<tr>
+<td>OKE Options</td>
+<td><code>/20180222/clusterOptions/{clusterOptionId}</code>, <code>/20180222/nodePoolOptions/{nodePoolOptionId}</code></td>
+<td><code>ContainerEngineClient</code></td>
+</tr>
+<tr>
+<td>OKE Kubeconfig</td>
+<td><code>/20180222/clusters/{clusterId}/kubeconfig/content</code></td>
+<td><code>ContainerEngineClient</code></td>
+</tr>
+<tr>
+<td>OKE Work Requests</td>
+<td><code>/20180222/workRequests</code></td>
+<td><code>ContainerEngineClient</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="supported-operations">Supported Operations</h2>
+<table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Operations</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Clusters</td>
+<td><code>CreateCluster</code>, <code>GetCluster</code>, <code>ListClusters</code>, <code>UpdateCluster</code>, <code>DeleteCluster</code>, <code>UpdateClusterEndpointConfig</code>, <code>ClusterMigrateToNativeVcn</code>, <code>CreateKubeconfig</code></td>
+</tr>
+<tr>
+<td>Cluster Add-ons</td>
+<td><code>InstallAddon</code>, <code>GetAddon</code>, <code>ListAddons</code>, <code>UpdateAddon</code>, <code>DisableAddon</code>, <code>ListAddonOptions</code></td>
+</tr>
+<tr>
+<td>Node Pools</td>
+<td><code>CreateNodePool</code>, <code>GetNodePool</code>, <code>ListNodePools</code>, <code>UpdateNodePool</code>, <code>DeleteNodePool</code></td>
+</tr>
+<tr>
+<td>Options</td>
+<td><code>GetClusterOptions</code>, <code>GetNodePoolOptions</code></td>
+</tr>
+<tr>
+<td>Work Requests</td>
+<td><code>GetWorkRequest</code>, <code>ListWorkRequests</code>, <code>ListWorkRequestErrors</code>, <code>ListWorkRequestLogs</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="kubernetes-versions">Kubernetes Versions</h2>
+<p>floci-oci offers the versions OKE supports, as listed in Oracle's release calendar on 2026-11-10 (<a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengaboutk8sversions.htm">Supported Versions of Kubernetes</a>), each pinned to the k3s image of the same patch (<code>&lt;image-repository&gt;:v&lt;version&gt;-k3s1</code>, <code>image-repository</code> defaults to <code>rancher/k3s</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Version</th>
+<th>k3s image</th>
+<th>OKE status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>v1.34.10</code></td>
+<td><code>rancher/k3s:v1.34.10-k3s1</code></td>
+<td>supported</td>
+</tr>
+<tr>
+<td><code>v1.35.0</code></td>
+<td><code>rancher/k3s:v1.35.0-k3s1</code></td>
+<td>preview</td>
+</tr>
+<tr>
+<td><code>v1.35.2</code></td>
+<td><code>rancher/k3s:v1.35.2-k3s1</code></td>
+<td>supported</td>
+</tr>
+<tr>
+<td><code>v1.36.4</code></td>
+<td><code>rancher/k3s:v1.36.4-k3s1</code></td>
+<td>supported, newest</td>
+</tr>
+<tr>
+<td><code>v1.37.0</code></td>
+<td><code>rancher/k3s:v1.37.0-k3s1</code></td>
+<td>preview</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Creating a cluster</strong>: <code>kubernetesVersion</code> is required, as in the SDK (<code>400 MissingParameter</code> without it) and must be one of the versions above (<code>400 InvalidParameter</code> otherwise). Versions OKE has retired, such as the <code>v1.28.2</code> and <code>v1.29.1</code> older floci-oci builds advertised, are refused.</li>
+<li><strong>Options</strong>: <code>GetClusterOptions</code> and <code>GetNodePoolOptions</code> with <code>all</code> list the newest patch of each minor plus the previews; <code>shouldListAllPatchVersions=true</code> lists every patch. With a cluster OCID, cluster options list the cluster's version and the versions it can be upgraded to, and node pool options list the versions a node pool of that cluster may run. <code>nodePoolOptions</code> also lists the shapes in the catalog below.</li>
+<li><strong>Upgrading the control plane</strong>: <code>UpdateCluster</code> with a newer <code>kubernetesVersion</code> recreates the k3s server on the new image, on the same volume, so the cluster keeps its data, its CA and its nodes. The cluster is <code>UPDATING</code> with an <code>IN_PROGRESS</code> <code>CLUSTER_UPDATE</code> work request until the new server answers <code>/readyz</code>, then <code>ACTIVE</code>. "Kubernetes requires that you upgrade control plane nodes one minor version at a time", there is no downgrade, and every node pool version and node version must stay within three minor versions (<a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengupgradeoverview.htm">Kubernetes Versions and Kubernetes Engine</a>, <a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengupgradingk8smasternode.htm">Upgrading the control plane</a>); any other target is <code>400 InvalidParameter</code>. <code>availableKubernetesUpgrades</code> lists the supported versions newer than the cluster's, up to the next minor. Worker nodes are not upgraded with the control plane.</li>
+<li><strong>Node pool versions</strong>: a node pool's <code>kubernetesVersion</code> (default: the cluster's) must not be newer than the control plane nor more than three minor versions behind it ("The worker nodes in a cluster must not run a more recent version of Kubernetes than the associated control plane nodes", <a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengupgradeoverview.htm">upgrade overview</a>). "Changing the Kubernetes version configured for a managed node pool does not change the Kubernetes version running on existing managed nodes" (<a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengupgradeoverview.htm">same page</a>): existing nodes keep theirs and new nodes take the pool's.</li>
+<li><strong>Node cycling</strong>: with <code>nodePoolCyclingDetails.isNodeCyclingEnabled</code>, a version change replaces the nodes (<a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengupgradingk8sworkernode.htm">Upgrading worker nodes</a>). <code>cycleModes</code> <code>INSTANCE_REPLACE</code> (floci-oci's default, as the SDK states none) gives every node a new instance, OCID and address; <code>BOOT_VOLUME_REPLACE</code> keeps each node's instance, address and name and restarts it on the new version. floci-oci replaces all nodes at once rather than <code>maximumSurge</code> and <code>maximumUnavailable</code> at a time, and does not cordon or drain them first.</li>
+<li><strong>Clusters stored by an older floci-oci</strong> on a version it no longer offers keep running on the image they ran on before (<code>rancher/k3s:v1.30.1-k3s1</code>), without that version being advertised.</li>
+</ul>
+<h2 id="real-mode-runtime">Real-Mode Runtime</h2>
+<p>When real mode is enabled (<code>FLOCI_OCI_SERVICES_OKE_MOCK=false</code>, the default outside tests), each cluster is a set of Docker containers on its own Docker network.</p>
+<h3 id="control-plane">Control plane</h3>
+<ul>
+<li><strong>Agentless k3s server</strong>: the server runs <code>k3s server --disable-agent --egress-selector-mode=cluster</code>, so it runs no kubelet and reaches the kubelets and pods through the agents' tunnels. <code>kubectl get nodes</code> lists only the worker nodes, and answers "No resources found" before the first node pool, as on OKE (<a href="https://docs.oracle.com/en/learn/deploy-vllm-production-stack-oke/index.html">Oracle's vLLM on OKE tutorial</a> shows both). <code>traefik</code>, <code>local-storage</code> and <code>metrics-server</code> are disabled (see Storage and Add-ons).</li>
+<li><strong>Cluster network</strong>: the server and its agents share the Docker network <code>floci-oci-oke-net-&lt;cluster OCID&gt;</code>, created with the cluster and removed on delete, with a <code>10.0.X.0/24</code> subnet starting at <code>10.0.10.0/24</code> (the worker subnet of OKE's quick-create workflow), skipping subnets other Docker networks hold or that overlap the cluster's pod or service network. Agents find the server by container name on it. The server is also attached to floci-oci's own network (or <code>FLOCI_OCI_SERVICES_DOCKER_NETWORK</code>), so the token webhook and in-Docker clients keep working.</li>
+<li><strong>Lifecycle</strong>: <code>CreateCluster</code> returns the cluster <code>CREATING</code> with an <code>IN_PROGRESS</code> work request. floci-oci polls the k3s API in the background; once <code>/readyz</code> answers, the cluster becomes <code>ACTIVE</code> and the work request <code>SUCCEEDED</code>, whatever the number of nodes. This is what Terraform and <code>oci ce cluster create --wait-for-state</code> wait on. A server that exits, or an API that is not ready within <code>FLOCI_OCI_SERVICES_OKE_READY_TIMEOUT_SECONDS</code> (default 300), marks both <code>FAILED</code>.</li>
+<li><strong>Dynamic Port Allocation</strong>: Each cluster's Kubernetes API server is bound to a dynamic host port in the configured range (default: <code>6443..6543</code>). The port is published on all host interfaces, so the API is reachable from other machines that can reach the host.</li>
+<li><strong>Reaching the API from other containers</strong>: by default (<code>FLOCI_OCI_SERVICES_OKE_ENDPOINT_MODE=host</code>) <code>endpoints.kubernetes</code> and the kubeconfig <code>server</code> are <code>https://127.0.0.1:&lt;hostPort&gt;</code>, which a client in another container cannot reach. Set <code>FLOCI_OCI_SERVICES_OKE_ENDPOINT_MODE=network</code> when floci-oci runs in a container (as in <code>docker-compose.yml</code>) and the clients are containers on the same Docker network: the address becomes <code>https://&lt;sidecar container name&gt;:6443</code>, for example <code>https://floci-oci-oke-ocid1.cluster.oc1.iad.&lt;unique&gt;:6443</code>. Every sidecar's serving certificate carries its container name as a SAN, so TLS still verifies against the kubeconfig CA. When floci-oci runs on the host, <code>network</code> falls back to <code>host</code>, as floci-aws EKS does. It also falls back, with a warning in the log, when the sidecar's network is Docker's default <code>bridge</code> (or <code>host</code>, <code>none</code>), since those networks have no container-name lookup: run floci-oci on a user-defined network, as <code>docker-compose.yml</code> does, or set <code>FLOCI_OCI_SERVICES_DOCKER_NETWORK</code> to one. The container name contains dots and can have a label that starts with a digit: kubectl and other Go clients accept it, but Java's <code>java.net.URI</code> does not parse it as a host.</li>
+</ul>
+<h3 id="node-pools-as-nodes">Node pools as nodes</h3>
+<ul>
+<li><strong>One k3s agent per node</strong>: every node of a node pool is a k3s agent container (<code>floci-oci-oke-node-&lt;instance OCID&gt;</code>) at a fixed address of the cluster network, from <code>.16</code> up, with its own named volume. A node pool is <code>CREATING</code> (or <code>UPDATING</code> after a change that adds or replaces nodes) with an <code>IN_PROGRESS</code> work request until all its nodes are Ready, then <code>ACTIVE</code>; a pool with no node is <code>ACTIVE</code> at once. Nodes not Ready within the ready timeout make the pool <code>FAILED</code>.</li>
+<li><strong>How many nodes, and where</strong>: <code>nodeConfigDetails.size</code> spread over <code>nodeConfigDetails.placementConfigs</code> in turn, else the deprecated <code>quantityPerSubnet</code> nodes in each of <code>subnetIds</code> (oci-go-sdk <code>CreateNodePoolDetails</code>). Nodes go to the placement's <code>faultDomains</code> in turn, else to <code>FAULT-DOMAIN-1</code> to <code>-3</code> of their availability domain in turn ("Each availability domain has three fault domains", <a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Reference/contengsupportedlabelsusecases.htm">Supported Labels</a>). <code>UpdateNodePool</code> with a new size, placement or subnet list adds or removes nodes; a smaller pool removes its newest nodes first. Removing a node stops its agent, deletes its Kubernetes Node object and its volume.</li>
+<li><strong>Node cap</strong>: at most <code>FLOCI_OCI_SERVICES_OKE_MAX_NODES_PER_CLUSTER</code> (default 5) agents run per cluster, given to node pools in creation order. Nodes past the cap still appear in <code>GetNodePool</code> as <code>ACTIVE</code>, with a <code>lifecycleDetails</code> note and no Kubernetes node, and a WARN names the cap and the pools short of nodes. The API always reports the requested counts.</li>
+<li><strong>Shapes and sizing</strong>: each agent container is limited to its shape's CPUs and memory (at most four fifths of the Docker host's memory and all its CPUs), and the kubelet reserves the rest of the host, so a node's allocatable resources come close to its shape. Fixed shapes take Oracle's sizes; flexible shapes take <code>nodeShapeConfig.ocpus</code> and <code>memoryInGBs</code> within the shape's limits, where memory runs from "1 GB or a value matching the number of OCPUs, whichever is greater" to "64 GB per OCPU" up to the shape's maximum (<a href="https://docs.oracle.com/en-us/iaas/Content/Compute/References/computeshapes.htm">Compute Shapes</a>); out-of-range values are <code>400 InvalidParameter</code>. An x86 OCPU is two vCPUs, an Ampere A1 OCPU one. Oracle does not document OKE's defaults when <code>nodeShapeConfig</code> is partial: floci-oci uses 1 OCPU and 16 GB per OCPU (6 GB on <code>VM.Standard.A1.Flex</code>). A shape outside the catalog is accepted and sized as 1 OCPU with 16 GB.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Shapes</th>
+<th>Sizes (<a href="https://docs.oracle.com/en-us/iaas/Content/Compute/References/computeshapes.htm">Compute Shapes</a>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Fixed</td>
+<td><code>VM.Standard2.1</code>/<code>.2</code>/<code>.4</code>/<code>.8</code>, <code>VM.Standard.E2.1</code>, <code>VM.Standard.E2.2</code>, <code>VM.Standard.E2.1.Micro</code></td>
+</tr>
+<tr>
+<td>Flexible</td>
+<td><code>VM.Standard.E3.Flex</code>, <code>VM.Standard.E4.Flex</code> (64 OCPUs, 1024 GB), <code>VM.Standard.E5.Flex</code> (126 OCPUs, 1049 GB), <code>VM.Standard3.Flex</code> (32, 512), <code>VM.Optimized3.Flex</code> (18, 256), <code>VM.Standard.A1.Flex</code> (76, 472), <code>VM.Standard.A2.Flex</code> (78, 946)</td>
+</tr>
+<tr>
+<td>GPU</td>
+<td><code>VM.GPU2.1</code>, <code>VM.GPU3.1</code>/<code>.2</code>/<code>.4</code>, <code>VM.GPU.A10.1</code>/<code>.2</code>, <code>BM.GPU2.2</code>, <code>BM.GPU3.8</code>, <code>BM.GPU4.8</code>, <code>BM.GPU.A10.4</code>, <code>BM.GPU.A100-v2.8</code>, <code>BM.GPU.H100.8</code>, <code>BM.GPU.H200.8</code>, <code>BM.GPU.L40S.4</code>, <code>BM.GPU.B200.8</code></td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>GPU shapes</strong>: a node of a GPU shape registers with the taint OKE GPU nodes carry, <code>nvidia.com/gpu=present:NoSchedule</code> ("OKE GPU nodes have a <code>nvidia.com/gpu=present:NoSchedule</code> taint", <a href="https://docs.oracle.com/en/learn/deploy-vllm-production-stack-oke/index.html">vLLM on OKE</a>), and advertises the shape's GPU count as <code>nvidia.com/gpu</code> capacity and allocatable, so a pod that requests GPUs and tolerates the taint schedules on it. On OKE the NVIDIA device plugin advertises the GPUs; here floci-oci sets the capacity on the node status, there is no GPU and no device plugin, and a container that needs a real GPU will not find one.</li>
+</ul>
+<h3 id="node-names-labels-and-provider-id">Node names, labels and provider ID</h3>
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Value</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Kubernetes node name</td>
+<td>the node's private IP, for example <code>10.0.10.16</code></td>
+<td><code>kubectl get nodes</code> output in <a href="https://docs.oracle.com/en/learn/deploy-vllm-production-stack-oke/index.html">vLLM on OKE</a> (<code>10.0.10.x</code>) and the <code>kubectl label nodes 10.0.1.2</code> example in <a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Reference/contengsupportedlabelsusecases.htm">Supported Labels</a></td>
+</tr>
+<tr>
+<td>Node <code>name</code> in the API (compute instance name)</td>
+<td><code>oke-c&lt;cluster&gt;-n&lt;node pool&gt;-s&lt;subnet&gt;-&lt;slot&gt;</code>, ten characters of each OCID</td>
+<td><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Reference/contenggeneratednodenames.htm">Generated Worker Node Name Formats</a> (<code>oke-cywiqripuyg-nsgagklgnst-st2qczvnmba-0</code>)</td>
+</tr>
+<tr>
+<td><code>spec.providerID</code></td>
+<td><code>oci://&lt;instance OCID&gt;</code></td>
+<td>oracle/oci-cloud-controller-manager <code>providerPrefix</code></td>
+</tr>
+<tr>
+<td><code>topology.kubernetes.io/zone</code>, <code>failure-domain.beta.kubernetes.io/zone</code></td>
+<td>the availability domain without its tenancy prefix, for example <code>US-ASHBURN-AD-1</code></td>
+<td><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Reference/contengsupportedlabelsusecases.htm">Supported Labels</a>; oci-cloud-controller-manager <code>mapAvailabilityDomainToFailureDomain</code></td>
+</tr>
+<tr>
+<td><code>topology.kubernetes.io/region</code>, <code>failure-domain.beta.kubernetes.io/region</code></td>
+<td>the instance's <code>region</code>: <code>iad</code> and <code>phx</code> for us-ashburn-1 and us-phoenix-1, the region name elsewhere</td>
+<td>oci-cloud-controller-manager <code>GetZoneByProviderID</code>; oci-go-sdk <code>core.Instance.Region</code></td>
+</tr>
+<tr>
+<td><code>oci.oraclecloud.com/fault-domain</code></td>
+<td><code>FAULT-DOMAIN-1</code> to <code>-3</code></td>
+<td><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Reference/contengsupportedlabelsusecases.htm">Supported Labels</a></td>
+</tr>
+<tr>
+<td><code>node.kubernetes.io/instance-type</code>, <code>beta.kubernetes.io/instance-type</code></td>
+<td>the node shape</td>
+<td>oci-cloud-controller-manager <code>InstanceType</code> returns the instance shape</td>
+</tr>
+<tr>
+<td><code>node-role.kubernetes.io/node</code></td>
+<td><code>""</code> (ROLES column <code>node</code>)</td>
+<td><code>kubectl get nodes</code> output in <a href="https://docs.oracle.com/en/learn/deploy-vllm-production-stack-oke/index.html">vLLM on OKE</a></td>
+</tr>
+<tr>
+<td><code>oci.oraclecloud.com/node.info.managed</code></td>
+<td><code>true</code></td>
+<td>Oracle's <a href="https://blogs.oracle.com/cloud-infrastructure/oci-kubernetes-engine-mixed-node-clusters">mixed node clusters announcement</a></td>
+</tr>
+<tr>
+<td><code>displayName</code>, <code>hostname</code>, <code>internal_addr</code>, <code>name</code> (the node pool), <code>node.info/kubeletVersion</code> (<code>v1.&lt;minor&gt;</code>), <code>node.info/compartment.id_prefix</code>/<code>_suffix</code></td>
+<td>as named</td>
+<td>seen on real OKE nodes in third-party write-ups, not documented by Oracle</td>
+</tr>
+<tr>
+<td><code>initialNodeLabels</code></td>
+<td>as given</td>
+<td>oci-go-sdk <code>CreateNodePoolDetails</code>: "added to nodes after they join the Kubernetes cluster". Labels a kubelet may set on itself are passed at registration, the others (for example <code>*.kubernetes.io/*</code> outside the kubelet's allowed set) applied through the API once the node joins. An invalid Kubernetes label is <code>400 InvalidParameter</code> (floci-oci's choice: Oracle documents no error).</td>
+</tr>
+<tr>
+<td>Annotation <code>oci.oraclecloud.com/compartment-id</code></td>
+<td>the node pool's compartment</td>
+<td>oci-cloud-controller-manager <code>CompartmentIDAnnotation</code></td>
+</tr>
+<tr>
+<td>Taint</td>
+<td><code>nvidia.com/gpu=present:NoSchedule</code> on GPU shapes only</td>
+<td><a href="https://docs.oracle.com/en/learn/deploy-vllm-production-stack-oke/index.html">vLLM on OKE</a></td>
+</tr>
+</tbody>
+</table>
+<h3 id="storage">Storage</h3>
+<p>k3s starts with <code>--disable=local-storage</code>, and every cluster gets the two storage classes OKE defines, from k3s's auto-deploy directory: "Two storage classes are defined by default, <code>oci-bv</code> for the CSI volume plugin and <code>oci</code> for the FlexVolume plugin", and in clusters created on Kubernetes 1.24 or later "the <code>oci-bv</code> storage class is initially set as the default" (<a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingpersistentvolumeclaim_topic-Provisioning_PVCs_on_BV.htm">Provisioning PVCs on the Block Volume service</a>). Their definitions follow oracle/oci-cloud-controller-manager's <code>manifests/container-storage-interface/storage-class.yaml</code> and <code>manifests/volume-provisioner/storage-class.yaml</code>:</p>
+<table>
+<thead>
+<tr>
+<th>StorageClass</th>
+<th>Provisioner</th>
+<th>Default</th>
+<th>Binding mode</th>
+<th>Expansion</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>oci-bv</code></td>
+<td><code>blockvolume.csi.oraclecloud.com</code></td>
+<td>yes</td>
+<td><code>WaitForFirstConsumer</code></td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>oci</code></td>
+<td><code>oracle.com/oci</code></td>
+<td>no</td>
+<td><code>Immediate</code></td>
+<td>no</td>
+</tr>
+</tbody>
+</table>
+<p>Each class is served by a <code>local-path-provisioner</code> instance registered under that provisioner name, so PVCs bind and PVs carry <code>pv.kubernetes.io/provisioned-by: blockvolume.csi.oraclecloud.com</code>. <code>oci-bv</code> volumes live on the node that first uses them; <code>oci</code> volumes bind before any node is chosen, so they live on a volume every agent of the cluster mounts. Not emulated: OKE's 50 GB minimum and rounding of PVC sizes, block volume performance, encryption and the <code>oci-bv-encrypted</code> class the CCM manifests also define (OKE does not create it by default).</p>
+<h3 id="networking">Networking</h3>
+<ul>
+<li><strong>Pod and service networks</strong>: from <code>options.kubernetesNetworkConfig.podsCidr</code> and <code>servicesCidr</code>, defaulting to <code>10.244.0.0/16</code> and <code>10.96.0.0/16</code> (oci-go-sdk <code>KubernetesNetworkConfig</code>: "Optional, defaults to 10.244.0.0/16" and "defaults to 10.96.0.0/16"). Each node takes a <code>/25</code> of the pod network: "Kubernetes Engine allocates a /25 CIDR block of network addresses for each worker node in a cluster" (<a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengcidrblocks.htm">IPv4 CIDR Blocks and Kubernetes Engine</a>). The cluster DNS service (<code>kube-dns</code>) sits at <code>10.96.5.5</code> in the default service network, as Oracle's <a href="https://docs.oracle.com/en/learn/oke-flannel-to-cilium-cni-plugin/index.html">Cilium on OKE tutorial</a> shows; in another service network floci-oci takes the same offset when it fits, else the tenth address.</li>
+<li><strong>Validation</strong>: both must be IPv4 CIDR blocks between <code>/8</code> and <code>/28</code> that do not overlap ("must not overlap", <a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengcidrblocks.htm">CIDR blocks</a>), and the pod network must hold at least one <code>/25</code>; otherwise <code>400 InvalidParameter</code>. Oracle documents no error code or size limit for these cases, so both are floci-oci's choice.</li>
+<li><strong>CNI</strong>: k3s's flannel runs whatever <code>clusterPodNetworkOptions.cniType</code> says. <code>OCI_VCN_IP_NATIVE</code> (pods taking addresses from a VCN subnet) is stored and echoed but not emulated.</li>
+</ul>
+<h3 id="loadbalancer-services">LoadBalancer Services</h3>
+<p>On OKE, a Service of type <code>LoadBalancer</code> gets an OCI Load Balancer (the default) or, with <code>oci.oraclecloud.com/load-balancer-type: "nlb"</code>, an OCI Network Load Balancer, created by OKE's cloud controller manager; "The load balancer may take a few minutes to go from a pending state to being fully operational", and its address appears as the Service's <code>EXTERNAL-IP</code>, for example <code>192.0.2.22</code> (<a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingloadbalancers-subtopic.htm">Provisioning OCI Load Balancers</a>, <a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingnetworkloadbalancers.htm">Network Load Balancers</a>). floci-oci emulates that controller for clusters created in real mode (<code>FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_MODE=emulated</code>, the default): k3s's own servicelb is off (<code>--disable=servicelb</code>) and floci-oci writes the OCI-shaped address into the Service's status.</p>
+<ul>
+<li><strong>Which Services</strong>: those of type <code>LoadBalancer</code> without <code>spec.loadBalancerClass</code>, the ones a cloud controller handles (kubernetes/cloud-provider <code>wantsLoadBalancer</code>); a Service with a class is left to whatever implements it.</li>
+<li><strong>Addresses</strong>: a public load balancer takes an address from <code>192.0.2.0/24</code> (<code>FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_PUBLIC_CIDR</code>, RFC 5737's TEST-NET-1, the range of Oracle's own example, never routed), unique across every cluster of the emulator, from <code>.10</code> up. An internal one (<code>service.beta.kubernetes.io/oci-load-balancer-internal: "true"</code>, or for an NLB <code>oci-network-load-balancer.oraclecloud.com/internal: "true"</code>) takes an address of the cluster's node subnet from <code>.254</code> down; node addresses go from <code>.16</code> up and the two never meet. <code>spec.loadBalancerIP</code> (a reserved public IP on OKE) is honored when it is a free address of the public range; <code>oci-network-load-balancer.oraclecloud.com/assigned-private-ipv4</code> when it is a free address of the node subnet. Addresses are stored, so they survive a restart.</li>
+<li><strong>Status</strong> (<code>loadBalancerToStatus</code> in oracle/oci-cloud-controller-manager): one <code>ingress</code> entry per address the load balancer has. A public OCI Load Balancer has its public address; an internal one its private address; a public NLB has a private and a public address (private first), or only the public one with <code>oci-network-load-balancer.oraclecloud.com/external-ip-only: "true"</code>. <code>oci.oraclecloud.com/ingress-ip-mode: Proxy|VIP</code> sets <code>ipMode</code>.</li>
+<li><strong>Refused as the CCM refuses them</strong>, with a <code>SyncLoadBalancerFailed</code> Warning event and the Service left <code>&lt;pending&gt;</code>: UDP on an OCI Load Balancer ("OCI load balancers do not support UDP"; use an NLB), UDP on an NLB whose security list management mode is not <code>None</code>, <code>sessionAffinity</code> other than <code>None</code>, <code>oci-load-balancer-shape: flexible</code> without <code>-shape-flex-min</code> and <code>-shape-flex-max</code>, an invalid boolean or <code>ingress-ip-mode</code>, <code>loadBalancerIP</code> on an internal load balancer, <code>assigned-private-ipv4</code> on an OCI Load Balancer, and an address floci-oci cannot give (outside the range, or taken).</li>
+<li><strong>Lifecycle, as a cloud controller does it</strong>: the <code>service.kubernetes.io/load-balancer-cleanup</code> finalizer is added first, the events <code>EnsuringLoadBalancer</code>, <code>EnsuredLoadBalancer</code>, <code>UpdatedLoadBalancer</code> (backends changed), <code>UnAvailableLoadBalancer</code> (no backend), <code>DeletingLoadBalancer</code> and <code>DeletedLoadBalancer</code> are recorded from <code>service-controller</code> with the upstream messages, and when the Service is deleted or stops being a LoadBalancer the address is released, its appliance removed and the finalizer dropped last. <code>FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_PROVISIONING_DELAY_SECONDS</code> (default 0) holds the status back to mimic OKE's "few minutes".</li>
+<li><strong>Data path</strong>: each load balancer is an appliance container (<code>floci-oci-oke-lb-&lt;Service UID&gt;</code>) started from the cluster's own k3s image, with <code>NET_ADMIN</code> and IP forwarding but not privileged, that holds the load balancer's addresses and forwards each Service port to the NodePort of the backend nodes, picked at random, masquerading the source. The backends are the Ready nodes of the cluster's node pools not labelled <code>node.kubernetes.io/exclude-from-external-load-balancers</code>; with <code>externalTrafficPolicy: Local</code>, only those with a ready endpoint of the Service. An internal appliance sits on the cluster network at its address; a public one on the Docker network <code>floci-oci-oke-lb-public</code> (created with the first public load balancer, removed with the last) at its public address, joined to the cluster network to reach the nodes. Every appliance also joins floci-oci's own network when floci-oci runs in a container. <code>loadBalancerSourceRanges</code> (IPv4) limits who is forwarded.</li>
+<li><strong>Host ports</strong>: each Service port is also published on the Docker host's <code>127.0.0.1</code>, at a free port by default (<code>FLOCI_OCI_SERVICES_OKE_LOAD_BALANCER_HOST_PORTS=dynamic</code>), at the Service's own port with <code>same-as-service</code> (a free port when it is taken), or not at all with <code>none</code>. The ports are written on the Service as the annotation <code>floci.io/load-balancer-host-ports</code>, for example <code>TCP/80=127.0.0.1:32768</code>, and kept when the appliance is replaced.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>From</th>
+<th>Internal address</th>
+<th>Public address</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A pod of the cluster</td>
+<td>yes (kube-proxy, and the appliance)</td>
+<td>yes (kube-proxy)</td>
+</tr>
+<tr>
+<td>A container on the cluster's network</td>
+<td>yes</td>
+<td>only when also on <code>floci-oci-oke-lb-public</code></td>
+</tr>
+<tr>
+<td>A container on floci-oci's network</td>
+<td>the appliance by name or its address on that network</td>
+<td>same</td>
+</tr>
+<tr>
+<td>The Docker host (macOS included)</td>
+<td><code>127.0.0.1:&lt;host port&gt;</code></td>
+<td>same</td>
+</tr>
+<tr>
+<td>A Linux Docker host</td>
+<td>also the address itself</td>
+<td>also the address itself</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Modes</strong>: <code>servicelb</code> keeps k3s's servicelb, which publishes the node addresses as before; <code>off</code> disables it and leaves Services <code>&lt;pending&gt;</code>. A cluster keeps the mode it was created with: a cluster stored by an earlier floci-oci, which had servicelb, keeps it when it is restored, so its Services keep their addresses (recreate the cluster to move it).</li>
+<li><strong>Not emulated</strong>: OCI Load Balancer and Network Load Balancer resources (floci-oci has no Load Balancer service, so nothing appears in the OCI API, and <code>serviceLbSubnetIds</code> and <code>serviceLbConfig</code> are only echoed), real public addresses, shapes and bandwidth, health checks and backend policies, TLS listeners, security lists and NSGs, <code>node-label-selector</code>, client source address preservation (the appliance masquerades), <code>allocateLoadBalancerNodePorts: false</code> (no NodePort to forward to; the address is still reported), and IPv6.</li>
+<li><strong>Not verified</strong>: that a public NLB reports a private and a public address, and in which order (inferred from the CCM code); publishing an appliance's ports on Docker Desktop or colima (verified on Linux Docker only); real provisioning times.</li>
+</ul>
+<h3 id="cluster-add-ons">Cluster add-ons</h3>
+<ul>
+<li><strong>Defaults</strong>: OKE deploys the Kubernetes Metrics Server only as an optional add-on, and "Optional cluster add-ons are not deployed by default" (<a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengintroducingclusteraddons.htm">Overview of Cluster Add-ons</a>). So k3s's bundled metrics-server is disabled and <code>kubectl top</code> fails until the <code>KubernetesMetricsServer</code> add-on is installed.</li>
+<li><strong>Offered add-ons</strong>: <code>KubernetesMetricsServer</code>, which deploys metrics-server (<code>rancher/mirrored-metrics-server:v0.8.1</code>, Deployment <code>metrics-server</code> in <code>kube-system</code>, as on OKE), and <code>CertManager</code>, which is recorded but deploys nothing. "To use the Kubernetes Metrics Server as a cluster add-on, you also have to deploy cert-manager", or set the <code>skipAddonDependenciesCheck</code> configuration to <code>true</code> when cert-manager runs standalone (<a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengworkingwithmetricsserver_cluster-add-on.htm">Kubernetes Metrics Server as a Cluster Add-on</a>). Other OKE add-ons are not offered (<code>404 NotAuthorizedOrNotFound</code>).</li>
+<li><strong>Rules</strong>: "You can only configure cluster add-ons when using enhanced clusters" (<a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengconfiguringclusteraddons.htm">Configuring Cluster Add-ons</a>); on a basic cluster add-ons are <code>400 InvalidParameter</code>. A cluster created without <code>type</code> is a basic cluster, as OKE creates one through the CLI or API until June 15, 2027 (<a href="https://docs.oracle.com/en-us/iaas/Content/servicechanges.htm">OKE service change announcement</a>), so add-ons need <code>type: ENHANCED_CLUSTER</code>. <code>InstallAddon</code> of an installed add-on without <code>isOverrideExisting</code> is <code>409 Conflict</code>, and the missing dependency <code>400 InvalidParameter</code>; Oracle documents neither error, so both are floci-oci's choice. <code>DisableAddon</code> needs <code>isRemoveExistingAddOn</code>, which with <code>true</code> also removes what the add-on deployed. Each operation answers <code>202</code> with an <code>ENABLE_ADDON</code>, <code>UPDATE_ADDON</code> or <code>DISABLE_ADDON</code> work request. <code>ListAddonOptions</code> needs <code>kubernetesVersion</code>. The add-on versions are the components floci-oci deploys, not OKE's.</li>
+<li><strong>Persistence</strong>: metrics-server's manifest lives on the server's volume, so it survives a control plane upgrade and a restart.</li>
+</ul>
+<h3 id="restore-at-startup">Restore at startup</h3>
+<p>In persistent, hybrid or wal storage modes, floci-oci restores every stored cluster at startup: it adopts a surviving server (matched by container name, labels, image and flags) or recreates it on the surviving volume, keeping its CA; when the volume is gone it starts a fresh server and logs that the CA changed. It then adopts each node's agent (matched by labels, image, server address and join token), recreates missing ones, and removes agents no node of the cluster has. Node pools stored before nodes were run get their agents then. Load balancers keep their stored addresses; the first controller pass adopts each appliance that still runs with the same configuration and recreates the others. In memory mode nothing is restored. Clusters stored by an older floci-oci restart on the agentless control plane with OKE's networks and storage classes; their pods move to agent nodes and their existing Services keep their old addresses, as they keep servicelb.</p>
+<h3 id="authentication">Authentication</h3>
+<ul>
+<li><strong>kubectl Authentication</strong>: The kubeconfig is the real OKE token version <code>2.0.0</code> shape: its user runs <code>oci ce cluster generate-token --cluster-id &lt;ocid&gt; --region &lt;region&gt;</code>, and its cluster entry carries the k3s CA, so TLS is verified. k3s does not know these tokens, so it sends each one to floci-oci in a Kubernetes <code>TokenReview</code> (a token webhook meant for the k3s sidecar and unauthenticated like every <code>/_floci-oci</code> endpoint, at <code>/_floci-oci/oke/token-webhook/&lt;tenancy&gt;/&lt;cluster&gt;</code>, the same design as floci-aws EKS). The API server caches each verdict for 30 seconds.</li>
+<li><strong>What a token is</strong>: <code>generate-token</code> signs a bare <code>GET https://containerengine.&lt;region&gt;.oraclecloud.com/cluster_request/&lt;cluster-ocid&gt;</code> with the caller's OCI signer over <code>date (request-target) host</code>, copies the <code>authorization</code> and <code>date</code> headers into the URL's query and base64url-encodes the URL (oci-cli <a href="https://github.com/oracle/oci-cli/blob/b9333bdcdcabdd10b8a4ef340ab4ebfc1d5cf5ae/services/container_engine/src/oci_cli_container_engine/containerengine_cli_extended.py#L30-L90"><code>containerengine_cli_extended.py</code></a>, oci-python-sdk <code>signer.py</code>). The query is not part of what was signed.</li>
+<li><strong>What every mode checks</strong>: the token must be that URL for this cluster and its region, with an <code>rsa-sha256</code> Signature over <code>date (request-target) host</code>, a keyId (or, for a session token, a <code>tenant</code> claim) in the cluster's tenancy, and a date within 5 minutes of now ("If the client's clock is skewed more than 5 minutes, a 401 (NotAuthenticated) HTTP status code is returned", <a href="https://docs.oracle.com/en-us/iaas/Content/API/Concepts/signingrequests.htm">Request Signatures</a>).</li>
+<li><strong>Signature verification</strong> (<code>FLOCI_OCI_SERVICES_OKE_TOKEN_VERIFICATION</code>):</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Token signed with</th>
+<th><code>known-keys</code> (default)</th>
+<th><code>strict</code></th>
+<th><code>off</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>an API key uploaded to identity (<code>UploadApiKey</code>, Terraform <code>oci_identity_api_key</code>)</td>
+<td>signature verified against the key; the caller mapped as OKE maps IAM users (below); a bad signature is <code>401</code></td>
+<td>same</td>
+<td>not verified; cluster-admin</td>
+</tr>
+<tr>
+<td>another key of a user who has uploaded keys</td>
+<td><code>401</code> (OCI would not know the key)</td>
+<td><code>401</code></td>
+<td>not verified; cluster-admin</td>
+</tr>
+<tr>
+<td>a key of a user with no uploaded key</td>
+<td>not verified; cluster-admin, as before; a WARN once per key says how to change that</td>
+<td><code>401</code></td>
+<td>not verified; cluster-admin</td>
+</tr>
+<tr>
+<td><code>--auth security_token</code> (<code>ST$&lt;jwt&gt;</code> keyId) for a user that exists in identity, with a <code>jwk</code> claim</td>
+<td>signature verified against the session key in <code>jwk</code> (proof the caller holds it), then mapped as OKE does; the JWT's own signature cannot be checked, since floci-oci issues no session tokens</td>
+<td><code>401</code></td>
+<td>not verified; cluster-admin</td>
+</tr>
+<tr>
+<td>any other session token, and instance principal tokens (<code>ptype: instance</code>)</td>
+<td>not verified; cluster-admin, username the token's <code>sub</code> (the instance OCID for an instance principal)</td>
+<td><code>401</code></td>
+<td>not verified; cluster-admin</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Who a verified caller becomes</strong>: as OKE documents it ("A user's permissions to access clusters comes from the IAM groups ... to which they belong", "You can use OCIDs to map Kubernetes RBAC rolebindings and clusterrolebindings to IAM users and groups", "By default, users are not assigned any Kubernetes RBAC roles", <a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengaboutaccesscontrol.htm">About Access Control and Kubernetes Engine</a>): the username and uid are the user's OCID, and the groups are the OCIDs of the user's IAM groups in the cluster's tenancy, then <code>system:authenticated</code>. A caller who holds <code>manage</code> on clusters where the cluster is also gets <code>system:masters</code> ("Oracle Cloud Infrastructure tenancy administrators already have sufficient privileges, and do not require the cluster-admin clusterrole", same page; <code>AdministerK8s</code> needs <code>CLUSTER_MANAGE</code>, <a href="https://docs.oracle.com/en-us/iaas/Content/Identity/Reference/contengpolicyreference.htm">Container Engine policy reference</a>). That holds for a member of the tenancy's group named <code>Administrators</code>, or of a group that a policy of the cluster's tenancy lets <code>manage clusters</code>, <code>manage cluster-family</code> or <code>manage all-resources</code> in the cluster's compartment, one above it, or the tenancy. Anyone else has only what RBAC binds to <code>User &lt;user OCID&gt;</code> or <code>Group &lt;group OCID&gt;</code>, for example <code>kubectl create rolebinding devs-view --clusterrole=view --group=&lt;group OCID&gt;</code>. Verified callers also carry the <code>extra</code> fields seen on real clusters: <code>AuthType=[Native]</code>, <code>ContextType=[OCI]</code>, <code>Principal=[&lt;OCID&gt;]</code>, <code>TenancyID=[&lt;OCID&gt;]</code>, <code>TokenV2=[true]</code>.</li>
+<li><strong>Becoming cluster-admin after uploading a key</strong>: floci-oci's default tenancy has no <code>Administrators</code> group (every real tenancy has one; floci-oci creates it only for child tenancies, through <code>CreateChildTenancy</code>). So a user who uploads its key goes from cluster-admin to <code>403</code> on everything, as a real non-administrator would, until it joins a group named <code>Administrators</code> (create it) or one of its groups gets a policy such as <code>Allow group &lt;name&gt; to manage cluster-family in tenancy</code>. floci-oci logs this the first time a verified user is not an administrator.</li>
+<li><strong>How policies are read</strong>: only <code>Allow &lt;subject&gt; to manage &lt;clusters | cluster-family | all-resources&gt; in &lt;location&gt;</code> statements count, where the subject is <code>group &lt;name&gt;[, &lt;name&gt;]</code>, <code>group id &lt;ocid&gt;[, id &lt;ocid&gt;]</code>, <code>group '&lt;domain&gt;'/'&lt;name&gt;'</code> (the <code>Default</code> domain only), <code>any-group</code> or <code>any-user</code>, and the location is <code>tenancy</code> (in a policy attached to the tenancy), <code>compartment id &lt;ocid&gt;</code>, or <code>compartment &lt;name&gt;[:&lt;name&gt;]</code> resolved from the compartment the policy is attached to (<a href="https://docs.oracle.com/en-us/iaas/Content/Identity/Concepts/policysyntax.htm">Policy Syntax</a>, <a href="https://docs.oracle.com/en-us/iaas/Content/Identity/Concepts/policies.htm">Policies and Compartment Hierarchies</a>). Group and compartment names match ignoring case. A statement with a <code>where</code> clause never grants, nor does any other form floci-oci cannot evaluate (<code>Endorse</code>, <code>Admit</code>, permission lists, dynamic groups), so a policy can only make floci-oci stricter than OKE, never looser. Policies of other tenancies are never read, as only callers from the cluster's own tenancy are accepted.</li>
+<li><strong>Static token alternative</strong>: Each cluster also gets a random API token, stored with the cluster and never returned by <code>CreateCluster</code>, <code>GetCluster</code> or <code>ListClusters</code>. Set <code>FLOCI_OCI_SERVICES_OKE_KUBECONFIG_AUTH=token</code> to receive it in the kubeconfig instead of the <code>exec</code> user, for clients without the oci CLI. It is cluster-admin on that cluster.</li>
+<li><strong>Prerequisites for kubectl</strong>: the <code>oci</code> CLI on <code>PATH</code> with a config whose key can sign. With <code>known-keys</code>, any key works until it is uploaded; with <code>strict</code>, upload it first (<code>oci iam user api-key upload --user-id &lt;ocid&gt; --key-file &lt;public.pem&gt;</code>).</li>
+<li><strong>Not verified against real OKE</strong>: OKE's token webhook is closed source and no Oracle page describes its algorithm. That it is OCI's standard signed-request check on <code>GET /cluster_request/&lt;cluster&gt;</code> is an inference from the token's shape; OKE's accepted clock window and whether it caches verdicts are not documented, so the 5 minutes is OCI's generic limit (<code>generate-token</code> refreshes after 4). The group list (<code>system:masters</code> for <code>manage clusters</code> holders, the order of the entries) and the <code>extra</code> keys come from third-party <code>kubectl auth whoami</code> output, not Oracle documentation. Whether OKE lists dynamic group OCIDs for users, and whether instance principal tokens carry a <code>jwk</code> claim, is not known.</li>
+</ul>
+<h3 id="persistence-mock-mode-and-teardown">Persistence, mock mode and teardown</h3>
+<ul>
+<li><strong>Storage Persistence</strong>: each server keeps its state in a Docker named volume mounted at <code>/var/lib/rancher/k3s</code>, each agent in its own, and the <code>oci</code> storage class in a cluster-wide one, all obeying the global storage persistence and <code>prune-volumes-on-delete</code> policies.</li>
+<li><strong>Mock Mode</strong>: Setting <code>FLOCI_OCI_SERVICES_OKE_MOCK=true</code> (default in test profiles) bypasses Docker: clusters are <code>ACTIVE</code> at once with the same endpoints a real cluster advertises on the default port (<code>https://127.0.0.1:6443</code>, private endpoint <code>10.0.0.10:6443</code>), node pools list their nodes <code>ACTIVE</code>, and add-ons are recorded only.</li>
+<li><strong>Teardown</strong>: <code>DELETE</code> and application shutdown remove the k3s server and agent containers and the cluster network and keep or drop the named volumes by the policy above, so a persistent cluster comes back after a restart. <code>POST /_floci-oci/state/reset</code> forgets every cluster and so always removes its volume too, whatever <code>prune-volumes-on-delete</code> says. The anonymous volumes the k3s image declares always go with the container.</li>
+</ul>
+<h2 id="wire-behavior-notes">Wire &amp; Behavior Notes</h2>
+<ul>
+<li><strong>Kubeconfig Generation</strong>: <code>POST /20180222/clusters/{id}/kubeconfig/content</code> accepts the SDK's <code>CreateClusterKubeconfigContentDetails</code> (<code>tokenVersion</code>, <code>expiration</code>, <code>endpoint</code>). <code>expiration</code> is deprecated in the SDK and ignored. <code>endpoint</code> must be one of <code>LEGACY_KUBERNETES</code>, <code>PUBLIC_ENDPOINT</code>, <code>PRIVATE_ENDPOINT</code> or <code>VCN_HOSTNAME</code> (any case; otherwise <code>400 InvalidParameter</code>); floci-oci has one reachable API address, <code>https://127.0.0.1:{hostPort}</code>, so every value resolves to it. Which endpoint real OKE picks when <code>endpoint</code> is omitted is not stated in the SDKs or the CLI (both leave it optional with no default), so that case resolves to the same address. Before the cluster is <code>ACTIVE</code> (or in mock mode) there is no CA yet, and the kubeconfig falls back to <code>insecure-skip-tls-verify: true</code>.</li>
+<li><strong>Cluster settings read back as sent</strong>: <code>type</code>, <code>endpointConfig</code>, <code>options</code>, <code>imagePolicyConfig</code> and <code>clusterPodNetworkOptions</code> are stored from <code>CreateClusterDetails</code> and returned by <code>GetCluster</code> and <code>ListClusters</code> exactly as given, reduced to the fields of their SDK types. Nothing is filled in for a setting that was not sent, since the defaults real OKE applies are not documented in the SDKs. Enum values (<code>type</code>, <code>cniType</code>, <code>ipFamilies</code>) are checked (<code>400 InvalidParameter</code>). Apart from <code>options.kubernetesNetworkConfig</code> (see Networking) and <code>type</code> (which gates add-ons), they are management-plane only: the k3s server does not change with them. <code>systemTags</code> is always <code>{}</code>.</li>
+<li><strong>Cluster updates</strong>: <code>UpdateCluster</code> changes the name, version, tags, <code>type</code>, <code>imagePolicyConfig</code>, and the options <code>UpdateClusterOptionsDetails</code> allows (<code>admissionControllerOptions</code>, <code>persistentVolumeConfig</code>, <code>serviceLbConfig</code>, OpenID Connect); the network options set on create stay. <code>UpdateClusterEndpointConfig</code> changes the NSGs, public IP and security attributes and keeps the subnet; <code>ClusterMigrateToNativeVcn</code> gives a cluster created without one its <code>endpointConfig</code> (what Terraform calls when <code>endpoint_config</code> is added later). Both answer <code>202</code> with a <code>CLUSTER_UPDATE</code> work request. <code>GetCluster</code> returns an <code>etag</code>, which <code>if-match</code> on these three operations checks.</li>
+<li><strong>Public endpoint</strong>: with <code>endpointConfig.isPublicIpEnabled</code> true, <code>endpoints.publicEndpoint</code> is the cluster's one reachable address, as host:port.</li>
+<li><strong>Work Requests</strong>: Asynchronous mutations (such as cluster and node pool creation or deletion) return <code>202 Accepted</code> with an <code>opc-work-request-id</code> header, pollable via <code>/20180222/workRequests/{id}</code>. <code>CreateCluster</code> and <code>CreateNodePool</code> return no body, as in the SDK: the new resource's OCID is the work request's <code>resources[0].identifier</code>. A cluster create that fails (the k3s sidecar exits, or is not ready in time) leaves its reason both in the cluster's <code>lifecycleDetails</code> and as an <code>InternalServerError</code> entry of <code>ListWorkRequestErrors</code>, which is where Terraform reads it.</li>
+<li><strong>Node pools need an <code>ACTIVE</code> cluster</strong>: on a <code>CREATING</code> cluster <code>CreateNodePool</code> is <code>409 IncorrectState</code> (which SDKs retry), and on a <code>FAILED</code>, <code>DELETING</code> or <code>DELETED</code> one it is <code>409 Conflict</code>. OCI documents neither case, so both are floci-oci's choice. <code>GetNodePool</code> and <code>ListNodePools</code> always carry <code>systemTags</code> <code>{}</code>, as the cluster does, so the oracle/oci provider (9.12 and later) plans no drift after an apply.</li>
+<li><strong>Node pool fields</strong>: <code>nodeConfigDetails</code>, <code>subnetIds</code>, <code>nodeShapeConfig</code>, <code>initialNodeLabels</code>, <code>nodeSourceDetails</code>, <code>sshPublicKey</code>, <code>nodeMetadata</code>, <code>nodePoolCyclingDetails</code> and <code>nodeEvictionNodePoolSettings</code> are stored as sent, reduced to the fields of their SDK types, and <code>nodes[]</code> lists one node per requested node with its OCID, name, availability domain, fault domain, subnet, private IP, Kubernetes version and lifecycle state. <code>nodeSourceDetails</code>, <code>sshPublicKey</code>, <code>nodeMetadata</code> and the eviction settings have no runtime effect.</li>
+<li><strong>Immutable Container Naming</strong>: Sidecar containers are named using the immutable cluster OCID (<code>floci-oci-oke-ocid1.cluster.oc1.iad.xxx</code>), ensuring display name updates via <code>UpdateCluster</code> do not affect container lifecycle or teardown.</li>
+</ul>
+<h2 id="what-floci-oci-decides-where-oracle-is-silent">What floci-oci decides where Oracle is silent</h2>
+<ul>
+<li>How a token is verified (OCI's signed-request check, inferred), the 5-minute window, and which callers are verified in each <code>token-verification</code> mode.</li>
+<li>
+<p>The load balancer address ranges, which end of the node subnet internal load balancers take, and the order of a public NLB's two addresses.</p>
+</li>
+<li>
+<p>Error codes for an invalid <code>initialNodeLabels</code> entry, an invalid or overlapping <code>kubernetesNetworkConfig</code>, a node pool on a cluster that is not <code>ACTIVE</code>, an unknown, duplicate or dependent add-on, and add-ons on a basic cluster.</p>
+</li>
+<li>The default memory per OCPU of a flexible shape when <code>nodeShapeConfig</code> sets only the OCPUs, and the size of a shape outside the catalog.</li>
+<li><code>INSTANCE_REPLACE</code> as the default cycle mode, and replacing every node at once.</li>
+<li>The node labels Oracle does not document (<code>displayName</code>, <code>hostname</code>, <code>internal_addr</code>, <code>name</code>, <code>node.info/*</code>), which part of each OCID goes into a node name (the last ten characters), and the kube-dns address in a non-default service network.</li>
+<li>Which add-on versions <code>ListAddonOptions</code> reports.</li>
+</ul>
+<h2 id="sources">Sources</h2>
+<ul>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/API/Concepts/signingrequests.htm">Request Signatures</a> and <a href="https://docs.oracle.com/en-us/iaas/Content/API/Concepts/apisigningkey.htm">Required Keys and OCIDs</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengaboutaccesscontrol.htm">About Access Control and Kubernetes Engine</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/Identity/Reference/contengpolicyreference.htm">Policy Configuration for Cluster Creation and Deployment / Container Engine policy reference</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/Identity/Concepts/policysyntax.htm">Policy Syntax</a> and <a href="https://docs.oracle.com/en-us/iaas/Content/Identity/Concepts/policies.htm">How Policies Work</a></li>
+<li>oci-cli <code>containerengine_cli_extended.py</code> (how <code>generate-token</code> builds the token)</li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengaboutk8sversions.htm">Supported Versions of Kubernetes</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengupgradeoverview.htm">Kubernetes Versions and Kubernetes Engine (OKE)</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengupgradingk8smasternode.htm">Upgrading the Kubernetes version on control plane nodes</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengupgradingk8sworkernode.htm">Upgrading the Kubernetes version on worker nodes</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Reference/contenggeneratednodenames.htm">Generated Worker Node Name Formats</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Reference/contengsupportedlabelsusecases.htm">Supported Labels for Different Usecases</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/Compute/References/computeshapes.htm">Compute Shapes</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingpersistentvolumeclaim_topic-Provisioning_PVCs_on_BV.htm">Provisioning PVCs on the Block Volume Service</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Concepts/contengcidrblocks.htm">IPv4 CIDR Blocks and Kubernetes Engine (OKE)</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingloadbalancers-subtopic.htm">Provisioning OCI Load Balancers for Kubernetes Services of Type LoadBalancer</a> and <a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengcreatingnetworkloadbalancers.htm">Provisioning OCI Network Load Balancers</a></li>
+<li>oracle/oci-cloud-controller-manager at <code>93969b5</code> (<code>load_balancer_spec.go</code> annotations and validation, <code>load_balancer.go loadBalancerToStatus</code>, <code>load_balancer_util.go validateProtocols</code>) and kubernetes/cloud-provider <code>controllers/service/controller.go</code> (finalizer, events)</li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengintroducingclusteraddons.htm">Overview of Cluster Add-ons</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengconfiguringclusteraddons.htm">Configuring Cluster Add-ons</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/ContEng/Tasks/contengworkingwithmetricsserver_cluster-add-on.htm">Working with the Kubernetes Metrics Server as a Cluster Add-on</a></li>
+<li><a href="https://docs.oracle.com/en/learn/deploy-vllm-production-stack-oke/index.html">Deploy the vLLM production stack on OKE</a></li>
+<li><a href="https://docs.oracle.com/en/learn/oke-flannel-to-cilium-cni-plugin/index.html">Use Cilium to Provide Networking Services in OKE</a></li>
+<li><a href="https://blogs.oracle.com/cloud-infrastructure/oci-kubernetes-engine-mixed-node-clusters">OCI Kubernetes Engine (OKE) Introduces Support for Mixed Node Clusters</a></li>
+<li><a href="https://docs.oracle.com/en-us/iaas/Content/servicechanges.htm">Service change: type of new cluster defaults to ENHANCED_CLUSTER</a></li>
+<li>oci-go-sdk <code>containerengine</code> and <code>core</code> (wire shapes, <code>KubernetesNetworkConfig</code> defaults, <code>core.Instance.Region</code>), oracle/oci-cloud-controller-manager at <code>93969b5</code> (provider ID, zone and region, instance type, compartment annotation, storage class manifests).</li>
+</ul>
+<h2 id="quickstart">Quickstart</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nv">E</span><span class="o">=</span><span class="s2">"--endpoint http://localhost:4599"</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="nv">TENANCY</span><span class="o">=</span>ocid1.tenancy.oc1..flocilocaltenancy0000000000000000000000000000000000000000
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Create a cluster (enhanced, so it takes add-ons)</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>oci<span class="w"> </span>ce<span class="w"> </span>cluster<span class="w"> </span>create<span class="w"> </span><span class="nv">$E</span><span class="w"> </span>--compartment-id<span class="w"> </span><span class="s2">"</span><span class="nv">$TENANCY</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span>--name<span class="w"> </span>demo-cluster<span class="w"> </span>--vcn-id<span class="w"> </span><span class="s2">"ocid1.vcn.oc1.iad.demovcn"</span><span class="w"> </span>--kubernetes-version<span class="w"> </span><span class="s2">"v1.36.4"</span><span class="w"> </span>--type<span class="w"> </span>ENHANCED_CLUSTER
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="c1"># List clusters</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>oci<span class="w"> </span>ce<span class="w"> </span>cluster<span class="w"> </span>list<span class="w"> </span><span class="nv">$E</span><span class="w"> </span>--compartment-id<span class="w"> </span><span class="s2">"</span><span class="nv">$TENANCY</span><span class="s2">"</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="c1"># Add two worker nodes (real mode: two k3s agents)</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>oci<span class="w"> </span>ce<span class="w"> </span>node-pool<span class="w"> </span>create<span class="w"> </span><span class="nv">$E</span><span class="w"> </span>--compartment-id<span class="w"> </span><span class="s2">"</span><span class="nv">$TENANCY</span><span class="s2">"</span><span class="w"> </span>--cluster-id<span class="w"> </span><span class="s2">"ocid1.cluster.oc1.iad.demo"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">  </span>--name<span class="w"> </span>workers<span class="w"> </span>--node-shape<span class="w"> </span>VM.Standard.E4.Flex<span class="w"> </span>--node-shape-config<span class="w"> </span><span class="s1">'{"ocpus": 1, "memoryInGBs": 4}'</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">  </span>--size<span class="w"> </span><span class="m">2</span><span class="w"> </span>--placement-configs<span class="w"> </span><span class="s1">'[{"availabilityDomain": "Floc:US-ASHBURN-AD-1", "subnetId": "ocid1.subnet.oc1.iad.workers"}]'</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="c1"># Download kubeconfig (once the cluster is ACTIVE, so it carries the CA)</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>oci<span class="w"> </span>ce<span class="w"> </span>cluster<span class="w"> </span>create-kubeconfig<span class="w"> </span><span class="nv">$E</span><span class="w"> </span>--cluster-id<span class="w"> </span><span class="s2">"ocid1.cluster.oc1.iad.demo"</span><span class="w"> </span>--file<span class="w"> </span>./kubeconfig
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="c1"># kubectl runs `oci ce cluster generate-token` for each request; real mode only</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="nv">KUBECONFIG</span><span class="o">=</span>./kubeconfig<span class="w"> </span>kubectl<span class="w"> </span>get<span class="w"> </span>nodes
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="c1"># A LoadBalancer Service gets an OCI-shaped address and a port on 127.0.0.1</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="nv">KUBECONFIG</span><span class="o">=</span>./kubeconfig<span class="w"> </span>kubectl<span class="w"> </span>expose<span class="w"> </span>deployment<span class="w"> </span>web<span class="w"> </span>--type<span class="o">=</span>LoadBalancer<span class="w"> </span>--port<span class="o">=</span><span class="m">80</span><span class="w"> </span>--target-port<span class="o">=</span><span class="m">8080</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="nv">KUBECONFIG</span><span class="o">=</span>./kubeconfig<span class="w"> </span>kubectl<span class="w"> </span>get<span class="w"> </span>service<span class="w"> </span>web<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="w">  </span>-o<span class="w"> </span><span class="nv">jsonpath</span><span class="o">=</span><span class="s1">'{.status.loadBalancer.ingress[0].ip} {.metadata.annotations.floci\.io/load-balancer-host-ports}'</span>
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="c1"># kubectl top needs the metrics server add-on, as on OKE</span>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>oci<span class="w"> </span>ce<span class="w"> </span>cluster<span class="w"> </span>install-addon<span class="w"> </span><span class="nv">$E</span><span class="w"> </span>--cluster-id<span class="w"> </span><span class="s2">"ocid1.cluster.oc1.iad.demo"</span><span class="w"> </span>--addon-name<span class="w"> </span>CertManager
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>oci<span class="w"> </span>ce<span class="w"> </span>cluster<span class="w"> </span>install-addon<span class="w"> </span><span class="nv">$E</span><span class="w"> </span>--cluster-id<span class="w"> </span><span class="s2">"ocid1.cluster.oc1.iad.demo"</span><span class="w"> </span>--addon-name<span class="w"> </span>KubernetesMetricsServer
+</code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.instant", "search.highlight", "search.suggest", "content.code.copy", "content.code.annotate", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.a5f9d56c.min.js"></script>
+      
+    
+  </body>
+</html>
