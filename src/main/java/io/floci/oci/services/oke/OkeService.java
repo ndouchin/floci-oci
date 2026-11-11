@@ -196,7 +196,10 @@ public class OkeService implements Resettable, CompartmentUsage {
             }
             requestReconcile(cluster);
             if (cluster.getCaCertificate() == null || clusterManager.prunesVolumesOnStop()) {
-                // Shutdown removed the volume holding the k3s CA, so the new sidecar has a new one.
+                if (cluster.getCaCertificate() != null) {
+                    LOG.warnv("OKE cluster {0} restarts on a new k3s volume, so its CA changed: fetch its"
+                            + " kubeconfig again once it is ACTIVE", cluster.getId());
+                }
                 cluster.setCaCertificate(null);
                 cluster.setLifecycleState("CREATING");
                 pendingClusters.put(cluster.getId(), new PendingCluster(owned.tenancyId(), clock.instant(),
