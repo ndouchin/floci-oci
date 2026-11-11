@@ -30,6 +30,22 @@ final class OkeLoadBalancerAddresses {
     private OkeLoadBalancerAddresses() {
     }
 
+    /** {@code load-balancer.public-cidr} must be an IPv4 range from {@code /16} to {@code /26}, leaving room for Docker's top {@code /28}. */
+    static void validatePublicCidr(String cidr) {
+        boolean valid;
+        try {
+            int prefix = Integer.parseInt(cidr.substring(cidr.indexOf('/') + 1));
+            parse(cidr.substring(0, cidr.indexOf('/')));
+            valid = cidr.indexOf('/') > 0 && prefix >= 16 && prefix <= 26;
+        } catch (RuntimeException e) {
+            valid = false;
+        }
+        if (!valid) {
+            throw new IllegalStateException("Invalid floci-oci.services.oke.load-balancer.public-cidr value '" + cidr
+                    + "': an IPv4 CIDR block from /16 to /26 is required");
+        }
+    }
+
     /** The lowest free public address of {@code cidr}, which {@code used} holds none of. */
     static String nextPublic(String cidr, Set<String> used) {
         long network = network(cidr);

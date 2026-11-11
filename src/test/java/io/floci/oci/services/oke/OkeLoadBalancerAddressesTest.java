@@ -48,6 +48,15 @@ class OkeLoadBalancerAddressesTest {
     }
 
     @Test
+    void thePublicRangeMustLeaveRoomForDockersOwnRange() {
+        OkeLoadBalancerAddresses.validatePublicCidr("192.0.2.0/24");
+        OkeLoadBalancerAddresses.validatePublicCidr("172.30.0.0/16");
+        assertThrows(IllegalStateException.class, () -> OkeLoadBalancerAddresses.validatePublicCidr("192.0.2.0/28"));
+        assertThrows(IllegalStateException.class, () -> OkeLoadBalancerAddresses.validatePublicCidr("192.0.2.0"));
+        assertThrows(IllegalStateException.class, () -> OkeLoadBalancerAddresses.validatePublicCidr("nope/24"));
+    }
+
+    @Test
     void containmentInARange() {
         assertTrue(OkeLoadBalancerAddresses.inCidr("192.0.2.50", "192.0.2.0/24"));
         assertFalse(OkeLoadBalancerAddresses.inCidr("192.0.3.50", "192.0.2.0/24"));

@@ -42,6 +42,8 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
@@ -56,7 +58,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Driver for real-mode rancher/k3s Docker sidecar containers managing local Kubernetes clusters.
  */
 @ApplicationScoped
-public class OkeClusterManager implements Resettable {
+public class OkeClusterManager implements Resettable, OkeLoadBalancerKube {
 
     private static final Logger LOG = Logger.getLogger(OkeClusterManager.class);
     private static final int K3S_CONTAINER_PORT = 6443;
@@ -91,6 +93,7 @@ public class OkeClusterManager implements Resettable {
     static final String WEBHOOK_FILE = TOKEN_DIR + "/token-webhook.yaml";
     static final String WEBHOOK_PATH_PREFIX = "/_floci-oci/oke/token-webhook/";
     private static final Duration PROBE_TIMEOUT = Duration.ofSeconds(3);
+    private static final String EVENT_ENV = "FLOCI_OKE_EVENT";
 
     /**
      * Writes the k3s static token file from {@link #API_TOKEN_ENV} and the token-webhook
@@ -858,6 +861,92 @@ public class OkeClusterManager implements Resettable {
                     labels.get(ContainerStorageHelper.RESOURCE_ID_LABEL), cluster.getId());
             lifecycleManager.removeIfExists(container.getId());
             lifecycleManager.removeVolume(volume);
+        }
+    }
+
+    // ── Load balancer controller's view of the Kubernetes API ───────────────
+
+    @Override
+    public Optional<Snapshot> snapshot(StoredOkeCluster cluster) {
+        ContainerLifecycleManager.ExecResult result = kubectl(cluster,
+                List.of("get", "services,nodes,endpointslices.discovery.k8s.io", "--all-namespaces", "-o", "json"));
+        if (!result.succeeded()) {
+            return Optional.empty();
+        }
+        try {
+            List<JsonNode> services = new ArrayList<>();
+            List<JsonNode> nodes = new ArrayList<>();
+            List<JsonNode> slices = new ArrayList<>();
+            for (JsonNode item : JSON.readTree(result.stdout()).path("items")) {
+                switch (item.path("kind").asText()) {
+                    case "Service" -> services.add(item);
+                    case "Node" -> nodes.add(item);
+                    case "EndpointSlice" -> slices.add(item);
+                    default -> LOG.debugv("Ignoring a {0} in cluster {1}", item.path("kind").asText(), cluster.getId());
+                }
+            }
+            return Optional.of(new Snapshot(services, nodes, slices));
+        } catch (IOException e) {
+            LOG.warnv("Unreadable Service list from cluster {0}: {1}", cluster.getId(), e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    public boolean patchService(StoredOkeCluster cluster, String namespace, String name, String mergePatch) {
+        return kubectl(cluster, List.of("-n", namespace, "patch", "service", name, "--type=merge", "-p", mergePatch))
+                .succeeded();
+    }
+
+    @Override
+    public boolean patchServiceStatus(StoredOkeCluster cluster, String namespace, String name, String mergePatch) {
+        return kubectl(cluster, List.of("-n", namespace, "patch", "service", name, "--subresource=status",
+                "--type=merge", "-p", mergePatch)).succeeded();
+    }
+
+    /**
+     * Creates a core/v1 Event as a cloud controller's recorder does ({@code source.component:
+     * service-controller}). kubectl has no command for that, and exec takes no stdin here, so the
+     * manifest travels in an env var to {@code kubectl create -f -}.
+     */
+    @Override
+    public void event(StoredOkeCluster cluster, OkeLoadBalancerSpec service, String type, String reason,
+                      String message) {
+        String now = Instant.now().truncatedTo(ChronoUnit.SECONDS).toString();
+        Map<String, Object> involved = new LinkedHashMap<>();
+        involved.put("apiVersion", "v1");
+        involved.put("kind", "Service");
+        involved.put("namespace", service.namespace());
+        involved.put("name", service.name());
+        involved.put("uid", service.uid());
+        if (service.resourceVersion() != null) {
+            involved.put("resourceVersion", service.resourceVersion());
+        }
+        Map<String, Object> event = new LinkedHashMap<>();
+        event.put("apiVersion", "v1");
+        event.put("kind", "Event");
+        event.put("metadata", Map.of("generateName", service.name() + ".", "namespace", service.namespace()));
+        event.put("involvedObject", involved);
+        event.put("reason", reason);
+        event.put("message", message);
+        event.put("type", type);
+        event.put("source", Map.of("component", "service-controller"));
+        event.put("reportingComponent", "service-controller");
+        event.put("reportingInstance", "floci-oci");
+        event.put("firstTimestamp", now);
+        event.put("lastTimestamp", now);
+        event.put("count", 1);
+        try {
+            ContainerLifecycleManager.ExecResult result = lifecycleManager.exec(containerName(cluster),
+                    List.of(EVENT_ENV + "=" + JSON.writeValueAsString(event)),
+                    List.of("sh", "-c", "printf '%s' \"$" + EVENT_ENV + "\" | kubectl create -f -"), KUBECTL_TIMEOUT);
+            if (!result.succeeded()) {
+                LOG.debugv("Event {0} for Service {1}/{2} not recorded: {3}", reason, service.namespace(),
+                        service.name(), result.stderr());
+            }
+        } catch (IOException | RuntimeException e) {
+            LOG.debugv("Event {0} for Service {1}/{2} not recorded: {3}", reason, service.namespace(), service.name(),
+                    e.getMessage());
         }
     }
 

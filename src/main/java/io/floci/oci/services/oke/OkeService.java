@@ -10,6 +10,7 @@ import io.floci.oci.core.common.Ocids;
 import io.floci.oci.core.common.Resettable;
 import io.floci.oci.core.common.ServiceDescriptor;
 import io.floci.oci.core.common.ServiceRegistry;
+import io.floci.oci.core.storage.InMemoryStorage;
 import io.floci.oci.core.storage.StorageBackend;
 import io.floci.oci.core.storage.StorageFactory;
 import io.floci.oci.core.storage.TenancyAwareStorageBackend;
@@ -17,6 +18,7 @@ import io.floci.oci.core.workrequest.StoredWorkRequest;
 import io.floci.oci.core.workrequest.WorkRequestService;
 import io.floci.oci.services.identity.IdentityService;
 import io.floci.oci.services.oke.model.StoredAddon;
+import io.floci.oci.services.oke.model.StoredLoadBalancer;
 import io.floci.oci.services.oke.model.StoredNode;
 import io.floci.oci.services.oke.model.StoredNodePool;
 import io.floci.oci.services.oke.model.StoredOkeCluster;
@@ -31,6 +33,7 @@ import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -46,6 +49,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -53,12 +57,13 @@ import java.util.stream.Stream;
  * Business logic service for OCI Container Engine for Kubernetes (OKE) API emulation.
  */
 @ApplicationScoped
-public class OkeService implements Resettable, CompartmentUsage {
+public class OkeService implements Resettable, CompartmentUsage, OkeLoadBalancerRecords {
 
     private static final Logger LOG = Logger.getLogger(OkeService.class);
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final int API_TOKEN_BYTES = 32;
     private static final long READINESS_POLL_SECONDS = 3;
+    private static final long LOAD_BALANCER_POLL_SECONDS = 3;
     /** The endpoints a cluster without a k3s sidecar (mock mode) advertises. */
     static final Map<String, String> MOCK_ENDPOINTS = Map.of(
             "kubernetes", "https://127.0.0.1:6443",
@@ -75,6 +80,8 @@ public class OkeService implements Resettable, CompartmentUsage {
 
     private final StorageBackend<String, StoredOkeCluster> clusters;
     private final StorageBackend<String, StoredNodePool> nodePools;
+    /** Keyed {@code <clusterId>/<serviceUid>}, in the cluster's partition. */
+    private final StorageBackend<String, StoredLoadBalancer> loadBalancers;
     private final EmulatorConfig config;
     private final OciContext ociContext;
     private final ServiceRegistry serviceRegistry;
@@ -91,20 +98,30 @@ public class OkeService implements Resettable, CompartmentUsage {
     private final Map<String, String> capWarnings = new ConcurrentHashMap<>();
     private final Map<String, Instant> poolsPendingSince = new ConcurrentHashMap<>();
     private final ScheduledExecutorService readinessPoller;
+    private final ScheduledExecutorService loadBalancerPoller;
+    private final OkeLoadBalancerController loadBalancerController;
+    /** Held by a load balancer pass over one cluster, and by a cluster delete, so no appliance outlives its cluster. */
+    private final Object loadBalancerPass = new Object();
+    /** Addresses Docker said something else holds; see {@link #avoid}. */
+    private final Set<String> avoidedAddresses = ConcurrentHashMap.newKeySet();
 
     @Inject
     public OkeService(StorageFactory storageFactory, EmulatorConfig config,
                       ServiceRegistry serviceRegistry, WorkRequestService workRequests,
-                      OkeClusterManager clusterManager, OciContext ociContext, IdentityService identity) {
+                      OkeClusterManager clusterManager, OkeLoadBalancerApplianceManager appliances,
+                      OciContext ociContext, IdentityService identity) {
         this(
             storageFactory.create("oke", "oke-clusters.json",
                 new TypeReference<Map<String, StoredOkeCluster>>() {}),
             storageFactory.create("oke", "oke-nodepools.json",
                 new TypeReference<Map<String, StoredNodePool>>() {}),
+            storageFactory.create("oke", "oke-load-balancers.json",
+                new TypeReference<Map<String, StoredLoadBalancer>>() {}),
             config,
             serviceRegistry,
             workRequests,
             clusterManager,
+            appliances,
             ociContext::tenancyId,
             Clock.systemUTC(),
             ociContext,
@@ -133,10 +150,27 @@ public class OkeService implements Resettable, CompartmentUsage {
                Clock clock,
                OciContext ociContext,
                IdentityService identity) {
+        this(clusters, nodePools, new InMemoryStorage<>(), config, serviceRegistry, workRequests, clusterManager,
+                null, tenancyId, clock, ociContext, identity);
+    }
+
+    OkeService(StorageBackend<String, StoredOkeCluster> clusters,
+               StorageBackend<String, StoredNodePool> nodePools,
+               StorageBackend<String, StoredLoadBalancer> loadBalancers,
+               EmulatorConfig config,
+               ServiceRegistry serviceRegistry,
+               WorkRequestService workRequests,
+               OkeClusterManager clusterManager,
+               OkeLoadBalancerAppliances appliances,
+               Supplier<String> tenancyId,
+               Clock clock,
+               OciContext ociContext,
+               IdentityService identity) {
         this.ociContext = ociContext;
         this.identity = identity;
         this.clusters = clusters;
         this.nodePools = nodePools;
+        this.loadBalancers = loadBalancers;
         this.config = config;
         this.serviceRegistry = serviceRegistry;
         this.workRequests = workRequests;
@@ -149,6 +183,15 @@ public class OkeService implements Resettable, CompartmentUsage {
             thread.setDaemon(true);
             return thread;
         });
+        this.loadBalancerPoller = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "oke-load-balancers");
+            thread.setDaemon(true);
+            return thread;
+        });
+        this.loadBalancerController = clusterManager != null && appliances != null
+                ? new OkeLoadBalancerController(clusterManager, appliances, this, clock,
+                        () -> config.services().oke().loadBalancer().provisioningDelaySeconds())
+                : null;
     }
 
     void onStart(@Observes StartupEvent ev) {
@@ -157,6 +200,8 @@ public class OkeService implements Resettable, CompartmentUsage {
             OkeClusterManager.validateEndpointMode(config.services().oke().endpointMode());
             OkeTokenVerification.parse(config.services().oke().tokenVerification());
             OkeLoadBalancerMode.parse(config.services().oke().loadBalancer().mode());
+            OkeLoadBalancerApplianceManager.validateHostPorts(config.services().oke().loadBalancer().hostPorts());
+            OkeLoadBalancerAddresses.validatePublicCidr(config.services().oke().loadBalancer().publicCidr());
         }
         if (serviceRegistry != null) {
             serviceRegistry.register(ServiceDescriptor.builder("oke")
@@ -168,12 +213,17 @@ public class OkeService implements Resettable, CompartmentUsage {
         reconstructClusterState();
         if (realMode() && config.services().oke().enabled()) {
             startReadinessPoller();
+            if (loadBalancerController != null) {
+                loadBalancerPoller.scheduleWithFixedDelay(this::pollLoadBalancersSafely,
+                        LOAD_BALANCER_POLL_SECONDS, LOAD_BALANCER_POLL_SECONDS, TimeUnit.SECONDS);
+            }
         }
     }
 
     @PreDestroy
     void stopReadinessPoller() {
         readinessPoller.shutdownNow();
+        loadBalancerPoller.shutdownNow();
     }
 
     void reconstructClusterState() {
@@ -418,6 +468,8 @@ public class OkeService implements Resettable, CompartmentUsage {
         poolsPendingSince.clear();
         clusters.clear();
         nodePools.clear();
+        loadBalancers.clear();
+        avoidedAddresses.clear();
         if (clusterManager != null) {
             clusterManager.clear();
         }
@@ -702,8 +754,13 @@ public class OkeService implements Resettable, CompartmentUsage {
         }
         reconcileQueue.remove(clusterId);
         capWarnings.remove(clusterId);
-        if (realMode()) {
-            clusterManager.stopCluster(cluster);
+        synchronized (loadBalancerPass) {
+            if (realMode()) {
+                clusterManager.stopCluster(cluster);
+            }
+            List<String> balancers = loadBalancerRecords(cluster).stream()
+                    .map(record -> loadBalancerKey(cluster, record.getServiceUid())).toList();
+            TenancyAwareStorageBackend.deleteAllIn(loadBalancers, loadBalancerPartition(cluster), balancers);
         }
 
         List<StoredNodePool> dependentPools = listNodePools(null, clusterId);
@@ -820,6 +877,11 @@ public class OkeService implements Resettable, CompartmentUsage {
         }
         pool.getNodes().forEach(node -> usedHosts.add(OkeNodePools.hostOf(node.getPrivateIp())));
         String nodeSubnet = cluster.getNodeSubnet() != null ? cluster.getNodeSubnet() : OkeNodePools.DEFAULT_NODE_SUBNET;
+        for (StoredLoadBalancer balancer : loadBalancerRecords(cluster)) {
+            if (balancer.getPrivateIp() != null && OkeLoadBalancerAddresses.inCidr(balancer.getPrivateIp(), nodeSubnet)) {
+                usedHosts.add(OkeNodePools.hostOf(balancer.getPrivateIp()));
+            }
+        }
         List<StoredNode> removed = OkeNodePools.resize(pool, cluster.getId(), nodeSubnet,
                 usedHosts, () -> Ocids.generate("instance", ociContext.realm(), ociContext.regionCode()),
                 this::defaultAvailabilityDomain);
@@ -1355,6 +1417,186 @@ public class OkeService implements Resettable, CompartmentUsage {
                 .sorted(Comparator.comparing((StoredNodePool pool) -> pool.getTimeCreated() != null
                         ? pool.getTimeCreated() : Instant.EPOCH).thenComparing(StoredNodePool::getId))
                 .toList();
+    }
+
+    // ── Load balancers (real mode) ──────────────────────────────────────────
+
+    private void pollLoadBalancersSafely() {
+        try {
+            pollLoadBalancers();
+        } catch (RuntimeException e) {
+            LOG.warnv(e, "OKE load balancer pass failed");
+        }
+    }
+
+    /**
+     * One load balancer pass over every ACTIVE cluster that was created with the emulated mode. The
+     * backends are the nodes of its node pools: only those floci-oci runs as k3s agents exist as
+     * Kubernetes nodes.
+     */
+    void pollLoadBalancers() {
+        if (loadBalancerController == null || !realMode()) {
+            return;
+        }
+        for (StoredOkeCluster cluster : TenancyAwareStorageBackend.scanAll(clusters)) {
+            if (!"ACTIVE".equals(cluster.getLifecycleState()) || cluster.getTenancyId() == null
+                    || OkeLoadBalancerMode.of(cluster) != OkeLoadBalancerMode.EMULATED) {
+                continue;
+            }
+            Set<String> agents = new HashSet<>();
+            synchronized (this) {
+                for (StoredNodePool pool : clusterPools(cluster.getTenancyId(), cluster.getId())) {
+                    pool.getNodes().forEach(node -> agents.add(node.getPrivateIp()));
+                }
+            }
+            synchronized (loadBalancerPass) {
+                Optional<StoredOkeCluster> current = findCluster(cluster.getTenancyId(), cluster.getId());
+                if (current.isEmpty() || !"ACTIVE".equals(current.get().getLifecycleState())) {
+                    continue;
+                }
+                try {
+                    loadBalancerController.reconcile(current.get(), agents);
+                } catch (RuntimeException e) {
+                    LOG.warnv(e, "OKE load balancer pass failed for cluster {0}", cluster.getId());
+                }
+            }
+        }
+    }
+
+    /** The stored load balancers of a cluster. */
+    List<StoredLoadBalancer> loadBalancerRecords(StoredOkeCluster cluster) {
+        if (cluster.getTenancyId() == null) {
+            return List.of();
+        }
+        return TenancyAwareStorageBackend.scanTenancy(loadBalancers, cluster.getTenancyId()).stream()
+                .filter(record -> cluster.getId().equals(record.getClusterId()))
+                .toList();
+    }
+
+    @Override
+    public List<StoredLoadBalancer> list(StoredOkeCluster cluster) {
+        return loadBalancerRecords(cluster);
+    }
+
+    /**
+     * Holds the service lock, as node pools do while they pick node addresses, so a load balancer and
+     * a node never take the same private address. Public addresses are unique across every cluster
+     * of every tenancy: they share one Docker network.
+     */
+    @Override
+    public synchronized Reservation reserve(StoredOkeCluster cluster, OkeLoadBalancerSpec spec, Instant now) {
+        String key = loadBalancerKey(cluster, spec.uid());
+        StoredLoadBalancer existing = TenancyAwareStorageBackend.getIn(loadBalancers, loadBalancerPartition(cluster), key)
+                .orElse(null);
+        String cidr = config.services().oke().loadBalancer().publicCidr();
+        String subnet = cluster.getNodeSubnet() != null ? cluster.getNodeSubnet() : OkeNodePools.DEFAULT_NODE_SUBNET;
+        boolean needsPublic = !spec.internal();
+        boolean needsPrivate = spec.internal() || spec.kind() == OkeLoadBalancerSpec.Kind.NLB;
+        if (existing != null && fits(existing, spec, needsPublic, needsPrivate, cidr, subnet)) {
+            return new Reservation(existing, false);
+        }
+        Set<String> usedPublic = new HashSet<>(avoidedAddresses);
+        for (StoredLoadBalancer other : TenancyAwareStorageBackend.scanAll(loadBalancers)) {
+            if (other != existing && other.getPublicIp() != null
+                    && !(cluster.getId().equals(other.getClusterId()) && spec.uid().equals(other.getServiceUid()))) {
+                usedPublic.add(other.getPublicIp());
+            }
+        }
+        Set<String> usedPrivate = new HashSet<>(avoidedAddresses);
+        for (StoredLoadBalancer other : loadBalancerRecords(cluster)) {
+            if (!spec.uid().equals(other.getServiceUid()) && other.getPrivateIp() != null) {
+                usedPrivate.add(other.getPrivateIp());
+            }
+        }
+        for (StoredNodePool pool : clusterPools(cluster.getTenancyId(), cluster.getId())) {
+            pool.getNodes().forEach(node -> usedPrivate.add(node.getPrivateIp()));
+        }
+        String publicIp = null;
+        if (needsPublic) {
+            publicIp = pick(spec.requestedPublicIp(), existing != null ? existing.getPublicIp() : null,
+                    existing != null && existing.getRequestedPublicIp() == null, usedPublic,
+                    address -> OkeLoadBalancerAddresses.isAllocatablePublic(address, cidr),
+                    () -> OkeLoadBalancerAddresses.nextPublic(cidr, usedPublic),
+                    "loadBalancerIP " + spec.requestedPublicIp()
+                            + " is not a free address of floci-oci's public load balancer range " + cidr);
+        }
+        String privateIp = null;
+        if (needsPrivate) {
+            privateIp = pick(spec.requestedPrivateIp(), existing != null ? existing.getPrivateIp() : null,
+                    existing != null && existing.getRequestedPrivateIp() == null, usedPrivate,
+                    address -> OkeLoadBalancerAddresses.isAllocatableInternal(address, subnet),
+                    () -> OkeLoadBalancerAddresses.nextInternal(subnet, usedPrivate),
+                    OkeLoadBalancerSpec.NLB_ASSIGNED_PRIVATE_IPV4 + " " + spec.requestedPrivateIp()
+                            + " is not a free load balancer address of the cluster's node subnet " + subnet);
+        }
+        StoredLoadBalancer record = existing != null ? existing : new StoredLoadBalancer();
+        record.setClusterId(cluster.getId());
+        record.setServiceUid(spec.uid());
+        record.setNamespace(spec.namespace());
+        record.setName(spec.name());
+        record.setKind(spec.kind().value());
+        record.setInternal(spec.internal());
+        record.setPublicIp(publicIp);
+        record.setPrivateIp(privateIp);
+        record.setRequestedPublicIp(spec.requestedPublicIp());
+        record.setRequestedPrivateIp(spec.requestedPrivateIp());
+        if (record.getFirstSeen() == null) {
+            record.setFirstSeen(now.toString());
+        }
+        TenancyAwareStorageBackend.putIn(loadBalancers, loadBalancerPartition(cluster), key, record);
+        return new Reservation(record, true);
+    }
+
+    /** Whether a stored load balancer still serves the Service as it is now. */
+    private static boolean fits(StoredLoadBalancer record, OkeLoadBalancerSpec spec, boolean needsPublic,
+                                boolean needsPrivate, String cidr, String subnet) {
+        return spec.kind().value().equals(record.getKind()) && spec.internal() == record.isInternal()
+                && Objects.equals(spec.requestedPublicIp(), record.getRequestedPublicIp())
+                && Objects.equals(spec.requestedPrivateIp(), record.getRequestedPrivateIp())
+                && needsPublic == (record.getPublicIp() != null) && needsPrivate == (record.getPrivateIp() != null)
+                && (record.getPublicIp() == null || OkeLoadBalancerAddresses.isAllocatablePublic(record.getPublicIp(), cidr))
+                && (record.getPrivateIp() == null || OkeLoadBalancerAddresses.isAllocatableInternal(record.getPrivateIp(), subnet));
+    }
+
+    /** The requested address when it is free and in range, else the current one while it still is, else a new one. */
+    private static String pick(String requested, String current, boolean currentWasPicked, Set<String> used,
+                               Predicate<String> allocatable, Supplier<String> next,
+                               String refusal) {
+        if (requested != null) {
+            if (!allocatable.test(requested) || used.contains(requested)) {
+                throw new IllegalStateException(refusal);
+            }
+            return requested;
+        }
+        if (current != null && currentWasPicked && allocatable.test(current) && !used.contains(current)) {
+            return current;
+        }
+        return next.get();
+    }
+
+    @Override
+    public synchronized void save(StoredOkeCluster cluster, StoredLoadBalancer record) {
+        TenancyAwareStorageBackend.putIn(loadBalancers, loadBalancerPartition(cluster),
+                loadBalancerKey(cluster, record.getServiceUid()), record);
+    }
+
+    @Override
+    public synchronized void release(StoredOkeCluster cluster, String serviceUid) {
+        TenancyAwareStorageBackend.deleteAllIn(loadBalancers, loadBalancerPartition(cluster),
+                List.of(loadBalancerKey(cluster, serviceUid)));
+    }
+
+    @Override
+    public void avoid(Collection<String> addresses) {
+        avoidedAddresses.addAll(addresses);
+    }
+
+    private static String loadBalancerKey(StoredOkeCluster cluster, String serviceUid) {
+        return cluster.getId() + "/" + serviceUid;
+    }
+
+    private static String loadBalancerPartition(StoredOkeCluster cluster) {
+        return TenancyAwareStorageBackend.regionalPartition(cluster.getTenancyId(), cluster.getRegion());
     }
 
     @Override
