@@ -169,6 +169,10 @@ final class OkeLoadBalancerController {
             return;
         }
         List<Map<String, String>> ingress = OkeLoadBalancerAddresses.ingress(record, spec.externalIpOnly(), spec.ipMode());
+        // As upstream: the load balancer is ensured, reported, then its status written.
+        if (!record.isEnsured()) {
+            kube.event(cluster, spec, NORMAL, "EnsuredLoadBalancer", "Ensured load balancer");
+        }
         if (!sameIngress(spec.statusIngress(), ingress)
                 && !kube.patchServiceStatus(cluster, spec.namespace(), spec.name(), statusPatch(ingress))) {
             return;
@@ -177,7 +181,6 @@ final class OkeLoadBalancerController {
         if (!record.isEnsured()) {
             record.setEnsured(true);
             records.save(cluster, record);
-            kube.event(cluster, spec, NORMAL, "EnsuredLoadBalancer", "Ensured load balancer");
             LOG.infov("Load balancer of Service {0}/{1} in cluster {2}: {3}", spec.namespace(), spec.name(),
                     cluster.getId(), ingress);
         }
