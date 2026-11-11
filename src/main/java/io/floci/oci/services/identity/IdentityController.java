@@ -4,6 +4,7 @@ import io.floci.oci.core.common.OciException;
 import io.floci.oci.core.common.OciPage;
 import io.floci.oci.core.workrequest.StoredWorkRequest;
 import io.floci.oci.core.workrequest.WorkRequestService;
+import io.floci.oci.services.identity.model.StoredApiKey;
 import io.floci.oci.services.identity.model.StoredCompartment;
 import io.floci.oci.services.identity.model.StoredGroup;
 import io.floci.oci.services.identity.model.StoredPolicy;
@@ -157,6 +158,29 @@ public class IdentityController {
     public Response deleteUser(@PathParam("userId") String userId,
                                @HeaderParam("if-match") String ifMatch) {
         service.deleteUser(userId, ifMatch);
+        return Response.noContent().build();
+    }
+
+    // ── API signing keys ───────────────────────────────────────────────────────
+
+    @POST
+    @Path("/users/{userId}/apiKeys")
+    public Response uploadApiKey(@PathParam("userId") String userId, Map<String, Object> body) {
+        StoredApiKey key = service.uploadApiKey(userId, str(body, "key"));
+        return withEtag(Response.ok(key), key.getEtag());
+    }
+
+    @GET
+    @Path("/users/{userId}/apiKeys")
+    public Response listApiKeys(@PathParam("userId") String userId) {
+        return Response.ok(service.listApiKeys(userId)).build();
+    }
+
+    @DELETE
+    @Path("/users/{userId}/apiKeys/{fingerprint}")
+    public Response deleteApiKey(@PathParam("userId") String userId,
+                                 @PathParam("fingerprint") String fingerprint) {
+        service.deleteApiKey(userId, fingerprint);
         return Response.noContent().build();
     }
 

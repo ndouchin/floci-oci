@@ -2,6 +2,7 @@ package io.floci.oci.services.identity;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import io.floci.oci.config.EmulatorConfig;
+import io.floci.oci.core.auth.OciRequestSignature;
 import io.floci.oci.core.common.CompartmentUsage;
 import io.floci.oci.core.common.Etags;
 import io.floci.oci.core.common.OciContext;
@@ -20,6 +21,7 @@ import io.floci.oci.core.tenancy.TenancyNames;
 import io.floci.oci.core.tenancy.TenancyRegistry;
 import io.floci.oci.core.workrequest.StoredWorkRequest;
 import io.floci.oci.core.workrequest.WorkRequestService;
+import io.floci.oci.services.identity.model.StoredApiKey;
 import io.floci.oci.services.identity.model.StoredCompartment;
 import io.floci.oci.services.identity.model.StoredGroup;
 import io.floci.oci.services.identity.model.StoredPolicy;
@@ -33,6 +35,8 @@ import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
+import java.security.PublicKey;
+import java.security.interfaces.RSAPublicKey;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -40,6 +44,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.locks.Lock;
@@ -73,6 +78,10 @@ public class IdentityService {
     /** "Compartments in a tenancy: 1000" (the IAM table of Oracle's service limits). */
     static final int MAX_COMPARTMENTS = 1000;
     static final int COMPARTMENT_LOCK_STRIPES = 64;
+    /** "Each user can have a maximum of three API signing keys" (oci-go-sdk {@code identity.ApiKey}). */
+    static final int MAX_API_KEYS_PER_USER = 3;
+    /** "RSA key pair in PEM format (minimum 2048 bits)" (Required Keys and OCIDs). */
+    static final int MIN_API_KEY_BITS = 2048;
 
     private final StorageBackend<String, StoredCompartment> compartments;
     private final StorageBackend<String, StoredUser> users;
@@ -80,6 +89,8 @@ public class IdentityService {
     private final StorageBackend<String, StoredUserGroupMembership> memberships;
     private final StorageBackend<String, StoredPolicy> policies;
     private final StorageBackend<String, StoredRegionSubscription> regionSubscriptions;
+    /** Keyed {@code <userId>/<fingerprint>}. */
+    private final StorageBackend<String, StoredApiKey> apiKeys;
     private final EmulatorConfig config;
     private final ServiceRegistry serviceRegistry;
     private final WorkRequestService workRequests;
@@ -123,6 +134,8 @@ public class IdentityService {
         this.regionSubscriptions = storageFactory.createGlobal("identity",
                 "identity-region-subscriptions.json",
                 new TypeReference<Map<String, StoredRegionSubscription>>() {});
+        this.apiKeys = storageFactory.createGlobal("identity", "identity-api-keys.json",
+                new TypeReference<Map<String, StoredApiKey>>() {});
     }
 
     IdentityService(StorageBackend<String, StoredCompartment> compartments,
@@ -160,6 +173,21 @@ public class IdentityService {
                     WorkRequestService workRequests,
                     OciContext ociContext,
                     Iterable<CompartmentUsage> compartmentUsages) {
+        this(compartments, users, groups, memberships, policies, regionSubscriptions, new InMemoryStorage<>(),
+                config, workRequests, ociContext, compartmentUsages);
+    }
+
+    IdentityService(StorageBackend<String, StoredCompartment> compartments,
+                    StorageBackend<String, StoredUser> users,
+                    StorageBackend<String, StoredGroup> groups,
+                    StorageBackend<String, StoredUserGroupMembership> memberships,
+                    StorageBackend<String, StoredPolicy> policies,
+                    StorageBackend<String, StoredRegionSubscription> regionSubscriptions,
+                    StorageBackend<String, StoredApiKey> apiKeys,
+                    EmulatorConfig config,
+                    WorkRequestService workRequests,
+                    OciContext ociContext,
+                    Iterable<CompartmentUsage> compartmentUsages) {
         this.compartmentUsages = compartmentUsages;
         this.regionRestrictions = List.of();
         this.ociContext = ociContext;
@@ -170,6 +198,7 @@ public class IdentityService {
         this.memberships = memberships;
         this.policies = policies;
         this.regionSubscriptions = regionSubscriptions;
+        this.apiKeys = apiKeys;
         this.config = config;
         this.serviceRegistry = null;
         this.workRequests = workRequests;
@@ -511,7 +540,87 @@ public class IdentityService {
         memberships.scan(k -> true).stream()
                 .filter(m -> userId.equals(m.getUserId()))
                 .forEach(m -> memberships.delete(m.getId()));
+        apiKeysOf(userId).forEach(key -> apiKeys.delete(apiKeyStorageKey(userId, key.getFingerprint())));
         users.delete(userId);
+    }
+
+    // ── API signing keys ───────────────────────────────────────────────────────
+
+    /**
+     * UploadApiKey. The key is {@code ACTIVE} at once (OCI: briefly {@code CREATING}). OCI documents
+     * the rules (an RSA key in PEM format of at least 2048 bits, at most three per user) but not
+     * their errors: a bad key and a fourth key are {@code 400 InvalidParameter}, the same key twice
+     * {@code 409 Conflict}.
+     */
+    public synchronized StoredApiKey uploadApiKey(String userId, String key) {
+        getUser(userId);
+        requireNonBlank(key, "key");
+        PublicKey publicKey;
+        try {
+            publicKey = OciRequestSignature.publicKeyFromPem(key);
+        } catch (IllegalArgumentException e) {
+            throw OciException.invalidParameter("The key must be an RSA public key in PEM format: " + e.getMessage());
+        }
+        if (!(publicKey instanceof RSAPublicKey)) {
+            throw OciException.invalidParameter("The key must be an RSA public key in PEM format, not "
+                    + publicKey.getAlgorithm());
+        }
+        int bits = OciRequestSignature.rsaBits(publicKey);
+        if (bits < MIN_API_KEY_BITS) {
+            throw OciException.invalidParameter("The key must be at least " + MIN_API_KEY_BITS
+                    + " bits long; this one is " + bits + " bits.");
+        }
+        String fingerprint = OciRequestSignature.fingerprint(publicKey);
+        List<StoredApiKey> existing = apiKeysOf(userId);
+        if (existing.stream().anyMatch(k -> fingerprint.equals(k.getFingerprint()))) {
+            throw OciException.conflict("The user already has an API key with fingerprint " + fingerprint + ".");
+        }
+        if (existing.size() >= MAX_API_KEYS_PER_USER) {
+            throw OciException.invalidParameter("A user can have at most " + MAX_API_KEYS_PER_USER
+                    + " API keys; delete one before uploading another.");
+        }
+        StoredApiKey apiKey = new StoredApiKey();
+        apiKey.setKeyId(tenancyId() + "/" + userId + "/" + fingerprint);
+        apiKey.setKeyValue(key);
+        apiKey.setFingerprint(fingerprint);
+        apiKey.setUserId(userId);
+        apiKey.setTimeCreated(Instant.now().toString());
+        apiKey.setLifecycleState("ACTIVE");
+        apiKey.setEtag(Etags.newEtag());
+        apiKeys.put(apiKeyStorageKey(userId, fingerprint), apiKey);
+        LOG.infov("uploadApiKey {0} for user {1}", fingerprint, userId);
+        return apiKey;
+    }
+
+    public List<StoredApiKey> listApiKeys(String userId) {
+        getUser(userId);
+        return apiKeysOf(userId);
+    }
+
+    public void deleteApiKey(String userId, String fingerprint) {
+        getUser(userId);
+        String storageKey = apiKeyStorageKey(userId, fingerprint);
+        apiKeys.get(storageKey).orElseThrow(() -> notFound("apiKey", fingerprint));
+        apiKeys.delete(storageKey);
+    }
+
+    /**
+     * The key {@code fingerprint} of {@code userId} in {@code tenancyId}'s partition, whatever tenancy
+     * the current request is signed with: for callers outside a request, such as OKE's token webhook.
+     */
+    public Optional<StoredApiKey> apiKey(String tenancyId, String userId, String fingerprint) {
+        return TenancyAwareStorageBackend.getIn(apiKeys, tenancyId, apiKeyStorageKey(userId, fingerprint));
+    }
+
+    private List<StoredApiKey> apiKeysOf(String userId) {
+        String prefix = userId + "/";
+        return apiKeys.scan(k -> k.startsWith(prefix)).stream()
+                .sorted(Comparator.comparing(StoredApiKey::getTimeCreated))
+                .toList();
+    }
+
+    private static String apiKeyStorageKey(String userId, String fingerprint) {
+        return userId + "/" + fingerprint;
     }
 
     // ── Groups ─────────────────────────────────────────────────────────────────

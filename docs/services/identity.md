@@ -8,6 +8,7 @@ OCI Identity and Access Management — API version `20160918`.
 |---|---|
 | Compartments | Create, Get, List (`compartmentIdInSubtree`, `name`, `lifecycleState`, `sortBy`, `sortOrder`, `accessLevel`), Update, Delete and Move (async, work request), Recover |
 | Users | Create, Get, List, Update, Delete |
+| API signing keys | UploadApiKey, ListApiKeys, DeleteApiKey |
 | Groups | Create, Get, List, Update, Delete |
 | User group memberships | AddUserToGroup, Get, List (by user/group), RemoveUserFromGroup |
 | Policies | Create, Get, List, Update, Delete |
@@ -79,8 +80,21 @@ oci iam compartment list --endpoint http://localhost:4599 --compartment-id "$TEN
   their tenancy's home region, so they are unaffected.
   `CreateRegionSubscription` is accepted in every region: the SDKs do not tie it to the home
   region, so floci-oci does not either.
-- Policy statements are stored verbatim; the policy language is not parsed or enforced.
-- Identity domains, API keys, auth tokens, dynamic groups and tag namespaces are not
+- Policy statements are stored verbatim and never enforced on API calls. The one place
+  floci-oci reads them is OKE's token webhook, which looks for `manage` grants on clusters to
+  decide who is a cluster administrator (see the Container Engine page, "Authentication").
+- API signing keys (`/20160918/users/{userId}/apiKeys`): `UploadApiKey` takes
+  `{"key": "<PEM>"}`, an RSA public key of at least 2048 bits ("RSA key pair in PEM format
+  (minimum 2048 bits)", [Required Keys and OCIDs][apisigningkey]), and returns the `ApiKey`
+  with its `fingerprint` (the colon-separated MD5 of the DER public key, the value
+  `openssl rsa -pubout -outform DER | openssl md5 -c` prints) and its `keyId`
+  `<tenancy>/<user>/<fingerprint>`. A user holds at most three keys ("You can have up to three
+  API key pairs per user", same page). The key is `ACTIVE` at once (OCI: briefly `CREATING`).
+  `ListApiKeys` returns a bare array; `DeleteApiKey` takes the fingerprint and answers `204`.
+  Deleting a user deletes its keys. Request signatures on the API itself are still parsed and
+  never verified: an uploaded key only matters to OKE's token webhook, which verifies the
+  `oci ce cluster generate-token` tokens signed with it.
+- Identity domains, auth tokens, customer secret keys, dynamic groups and tag namespaces are not
   implemented yet.
 
 ## Emulator choices
@@ -100,4 +114,8 @@ Behaviour that OCI's SDKs and documentation do not settle, and what floci-oci do
 - **Error codes OCI does not document** for a rule it does document: `400 InvalidParameter` for
   the compartment depth limit, `400 LimitExceeded` for the compartment count limit,
   `401 NotAuthenticated` for a region outside the realm, and a `Conflict` work-request error
-  for a non-empty compartment.
+  for a non-empty compartment. For API keys, not verified against real OCI: `400 InvalidParameter`
+  for a fourth key and for a key that is not RSA, is shorter than 2048 bits or is not PEM, and
+  `409 Conflict` for a key the user already has.
+
+[apisigningkey]: https://docs.oracle.com/en-us/iaas/Content/API/Concepts/apisigningkey.htm
