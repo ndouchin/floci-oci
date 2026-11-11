@@ -9,12 +9,14 @@ import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.dockerjava.api.exception.DockerException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.Bind;
+import com.github.dockerjava.api.model.Capability;
 import com.github.dockerjava.api.model.Container;
 import com.github.dockerjava.api.model.ContainerNetwork;
 import com.github.dockerjava.api.model.ExposedPort;
 import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
 import com.github.dockerjava.api.model.Info;
+import com.github.dockerjava.api.model.InternetProtocol;
 import com.github.dockerjava.api.model.Mount;
 import com.github.dockerjava.api.model.MountType;
 import com.github.dockerjava.api.model.Network;
@@ -36,8 +38,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -133,11 +138,15 @@ public class ContainerLifecycleManager {
         if (spec.ipv4Address() != null && !spec.ipv4Address().isBlank()) {
             createCmd.withIpv4Address(spec.ipv4Address());
         }
-        if (spec.exposedPorts() != null && !spec.exposedPorts().isEmpty()) {
-            ExposedPort[] exposed = spec.exposedPorts().stream()
-                    .map(ExposedPort::tcp)
-                    .toArray(ExposedPort[]::new);
-            createCmd.withExposedPorts(exposed);
+        List<ExposedPort> exposed = new ArrayList<>();
+        if (spec.exposedPorts() != null) {
+            spec.exposedPorts().forEach(port -> exposed.add(ExposedPort.tcp(port)));
+        }
+        if (spec.publishedPorts() != null) {
+            spec.publishedPorts().forEach(port -> exposed.add(exposedPort(port)));
+        }
+        if (!exposed.isEmpty()) {
+            createCmd.withExposedPorts(exposed.toArray(new ExposedPort[0]));
         }
 
         CreateContainerResponse response = createCmd.exec();
@@ -170,8 +179,63 @@ public class ContainerLifecycleManager {
             }
         }
 
+        if (spec.networkAttachments() != null) {
+            for (ContainerSpec.NetworkAttachment attachment : spec.networkAttachments()) {
+                ContainerNetwork network = new ContainerNetwork();
+                if (attachment.ipv4Address() != null && !attachment.ipv4Address().isBlank()) {
+                    network.withIpamConfig(new ContainerNetwork.Ipam().withIpv4Address(attachment.ipv4Address()));
+                }
+                dockerClient.connectToNetworkCmd()
+                        .withContainerId(containerId)
+                        .withNetworkId(attachment.network())
+                        .withContainerNetwork(network)
+                        .exec();
+                LOG.debugv("Connected container {0} to network {1} at {2}", containerId, attachment.network(),
+                        attachment.ipv4Address() != null ? attachment.ipv4Address() : "a dynamic address");
+            }
+        }
+
         Map<Integer, EndpointInfo> endpoints = resolveEndpoints(containerId, spec);
         return new ContainerInfo(containerId, endpoints);
+    }
+
+    private static ExposedPort exposedPort(ContainerSpec.PublishedPort port) {
+        return new ExposedPort(port.containerPort(), InternetProtocol.parse(port.protocol().toLowerCase(Locale.ROOT)));
+    }
+
+    /**
+     * The host port each published container port is bound to, keyed {@code <PROTOCOL>/<port>} (for
+     * example {@code UDP/53}); a port bound on several host addresses reports its first binding.
+     */
+    public Map<String, Integer> publishedHostPorts(String containerId) {
+        InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
+        Map<String, Integer> result = new LinkedHashMap<>();
+        Ports ports = inspect.getNetworkSettings() != null ? inspect.getNetworkSettings().getPorts() : null;
+        if (ports == null) {
+            return result;
+        }
+        for (Map.Entry<ExposedPort, Ports.Binding[]> entry : ports.getBindings().entrySet()) {
+            if (entry.getValue() == null || entry.getValue().length == 0) {
+                continue;
+            }
+            try {
+                result.put(entry.getKey().getProtocol().name() + "/" + entry.getKey().getPort(),
+                        Integer.parseInt(entry.getValue()[0].getHostPortSpec()));
+            } catch (NumberFormatException ignored) {
+                // A binding Docker has not resolved to a number yet: reported as not published.
+            }
+        }
+        return result;
+    }
+
+    /** How many containers a network has, empty when there is no network by that name. */
+    public Optional<Integer> networkContainerCount(String name) {
+        try {
+            Network network = dockerClient.inspectNetworkCmd().withNetworkId(name).exec();
+            return Optional.of(network.getContainers() != null ? network.getContainers().size() : 0);
+        } catch (NotFoundException e) {
+            return Optional.empty();
+        }
     }
 
     /**
@@ -840,8 +904,20 @@ public class ContainerLifecycleManager {
         // binding. ECR's sibling registry is the exception: it always publishes
         // its port because host-side docker clients (and CDK in compat tests)
         // connect via localhost:<hostPort>.
+        if (spec.capAdd() != null && !spec.capAdd().isEmpty()) {
+            hostConfig.withCapAdd(spec.capAdd().stream().map(Capability::valueOf).toArray(Capability[]::new));
+        }
+        if (spec.sysctls() != null && !spec.sysctls().isEmpty()) {
+            hostConfig.withSysctls(spec.sysctls());
+        }
+
         if (spec.hasPortBindings()) {
             Ports ports = new Ports();
+            for (ContainerSpec.PublishedPort port : spec.publishedPorts() != null
+                    ? spec.publishedPorts() : List.<ContainerSpec.PublishedPort>of()) {
+                ports.bind(exposedPort(port), new Ports.Binding(port.hostIp(),
+                        port.hostPort() == 0 ? null : String.valueOf(port.hostPort())));
+            }
             for (Map.Entry<Integer, Integer> entry : spec.portBindings().entrySet()) {
                 int containerPort = entry.getKey();
                 int hostPort = entry.getValue();
