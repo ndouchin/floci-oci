@@ -1103,9 +1103,14 @@ public class OkeService implements Resettable, CompartmentUsage {
         return cluster.getAddons().stream().anyMatch(addon -> addon.getName().equals(addonName));
     }
 
+    /**
+     * "You can only configure cluster add-ons when using enhanced clusters", and a cluster created
+     * through the API without a {@code type} is a basic cluster until June 15, 2027 (OKE service
+     * change announcement).
+     */
     private static void requireAddonsAllowed(StoredOkeCluster cluster) {
         requireActive(cluster, "given add-ons");
-        if ("BASIC_CLUSTER".equals(cluster.getType())) {
+        if (!"ENHANCED_CLUSTER".equals(cluster.getType())) {
             throw OciException.invalidParameter("Cluster add-ons need an enhanced cluster; cluster "
                     + cluster.getId() + " is a basic cluster");
         }

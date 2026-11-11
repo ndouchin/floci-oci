@@ -416,7 +416,15 @@ class OkeRestIntegrationTest {
                 .body("name", hasItem("KubernetesMetricsServer"))
                 .body("find { it.name == 'KubernetesMetricsServer' }.isEssential", equalTo(false));
 
-        String clusterId = createCluster("addon-cluster");
+        Map<String, Object> enhanced = new HashMap<>();
+        enhanced.put("compartmentId", compartment);
+        enhanced.put("name", "addon-cluster");
+        enhanced.put("vcnId", VCN);
+        enhanced.put("kubernetesVersion", OkeVersions.DEFAULT_VERSION);
+        enhanced.put("type", "ENHANCED_CLUSTER");
+        String clusterId = OkeWorkRequests.createdId(given().contentType(ContentType.JSON).body(enhanced)
+            .when().post("/20180222/clusters")
+            .then().statusCode(202).extract().header("opc-work-request-id"));
         given().contentType(ContentType.JSON).body(Map.of("addonName", "KubernetesMetricsServer"))
             .when().post("/20180222/clusters/{id}/addons", clusterId)
             .then().statusCode(400).body("code", equalTo("InvalidParameter"));
@@ -462,6 +470,9 @@ class OkeRestIntegrationTest {
             .then().statusCode(202).extract().header("opc-work-request-id"));
         given().contentType(ContentType.JSON).body(Map.of("addonName", "CertManager"))
             .when().post("/20180222/clusters/{id}/addons", basicId)
+            .then().statusCode(400).body("code", equalTo("InvalidParameter"));
+        given().contentType(ContentType.JSON).body(Map.of("addonName", "CertManager"))
+            .when().post("/20180222/clusters/{id}/addons", createCluster("untyped-cluster"))
             .then().statusCode(400).body("code", equalTo("InvalidParameter"));
     }
 
