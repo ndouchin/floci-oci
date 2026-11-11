@@ -528,7 +528,7 @@ class OkeRestIntegrationTest {
                 .body("nodeConfigDetails.placementConfigs[1].faultDomains[0]", equalTo("FAULT-DOMAIN-3"))
                 .body("nodes.size()", equalTo(3))
                 .body("nodes[0].id", startsWith("ocid1.instance.oc1.iad."))
-                .body("nodes[0].name", matchesPattern("oke-c[a-z0-9]{11}-n[a-z0-9]{11}-s[a-z0-9]{11}-0"))
+                .body("nodes[0].name", matchesPattern("oke-c[a-z0-9]{10}-n[a-z0-9]{10}-s[a-z0-9]{10}-0"))
                 .body("nodes[0].nodePoolId", equalTo(poolId))
                 .body("nodes[0].subnetId", equalTo(subnetA))
                 .body("nodes[0].availabilityDomain", equalTo("Floc:US-ASHBURN-AD-1"))

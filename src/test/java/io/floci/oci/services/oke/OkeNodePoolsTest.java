@@ -46,9 +46,9 @@ class OkeNodePoolsTest {
 
         List<StoredNode> nodes = pool.getNodes();
         assertEquals(List.of(SUBNET_A, SUBNET_B, SUBNET_A, SUBNET_B), nodes.stream().map(StoredNode::getSubnetId).toList());
-        assertEquals("oke-cabcdefghijk-npoolpoolabc-saaaaaaaaaaa-0", nodes.get(0).getName());
-        assertEquals("oke-cabcdefghijk-npoolpoolabc-sbbbbbbbbbbb-0", nodes.get(1).getName());
-        assertEquals("oke-cabcdefghijk-npoolpoolabc-saaaaaaaaaaa-1", nodes.get(2).getName());
+        assertEquals("oke-cbcdefghijk-noolpoolabc-saaaaaaaaaa-0", nodes.get(0).getName());
+        assertEquals("oke-cbcdefghijk-noolpoolabc-sbbbbbbbbbb-0", nodes.get(1).getName());
+        assertEquals("oke-cbcdefghijk-noolpoolabc-saaaaaaaaaa-1", nodes.get(2).getName());
         assertEquals(List.of("FAULT-DOMAIN-1", "FAULT-DOMAIN-2", "FAULT-DOMAIN-3", "FAULT-DOMAIN-1"),
                 nodes.stream().map(StoredNode::getFaultDomain).toList());
         assertEquals(List.of("10.0.10.16", "10.0.10.17", "10.0.10.18", "10.0.10.19"),
@@ -74,7 +74,7 @@ class OkeNodePoolsTest {
         assertEquals(2, removed.size());
         assertEquals("10.0.10.19", removed.get(0).getPrivateIp());
         assertEquals(1, pool.getNodes().size());
-        assertEquals("oke-cabcdefghijk-npoolpoolabc-saaaaaaaaaaa-0", pool.getNodes().getFirst().getName());
+        assertEquals("oke-cbcdefghijk-noolpoolabc-saaaaaaaaaa-0", pool.getNodes().getFirst().getName());
     }
 
     @Test

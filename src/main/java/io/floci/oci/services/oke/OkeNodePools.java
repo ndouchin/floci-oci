@@ -28,7 +28,8 @@ final class OkeNodePools {
     static final int FIRST_NODE_HOST = 16;
     static final int LAST_NODE_HOST = 254;
     static final String DEFAULT_NODE_SUBNET = "10.0.10.0/24";
-    private static final int NAME_PART_LENGTH = 11;
+    /** Oracle's example names carry ten characters of each OCID: {@code oke-cywiqripuyg-nsgagklgnst-st2qczvnmba-0}. */
+    private static final int NAME_PART_LENGTH = 10;
 
     /** CreateNodePoolNodeConfigDetails and UpdateNodePoolNodeConfigDetails. */
     private static final Set<String> NODE_CONFIG_DETAILS = Set.of("size", "placementConfigs", "nsgIds", "kmsKeyId",
