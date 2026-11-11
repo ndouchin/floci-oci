@@ -155,6 +155,7 @@ public class OkeService implements Resettable, CompartmentUsage {
         if (config.services().oke().enabled()) {
             OkeKubeconfigGenerator.validateAuthMode(config.services().oke().kubeconfigAuth());
             OkeClusterManager.validateEndpointMode(config.services().oke().endpointMode());
+            OkeTokenVerification.parse(config.services().oke().tokenVerification());
         }
         if (serviceRegistry != null) {
             serviceRegistry.register(ServiceDescriptor.builder("oke")

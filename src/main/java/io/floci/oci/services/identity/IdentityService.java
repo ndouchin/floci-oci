@@ -672,6 +672,18 @@ public class IdentityService {
         return chain;
     }
 
+    /** Every API key of {@code userId} in {@code tenancyId}'s partition; see {@link #apiKey}. */
+    public List<StoredApiKey> apiKeys(String tenancyId, String userId) {
+        return TenancyAwareStorageBackend.scanTenancy(apiKeys, tenancyId).stream()
+                .filter(key -> userId.equals(key.getUserId()))
+                .toList();
+    }
+
+    /** {@code userId} in {@code tenancyId}'s partition; see {@link #apiKey}. */
+    public Optional<StoredUser> user(String tenancyId, String userId) {
+        return TenancyAwareStorageBackend.getIn(users, tenancyId, userId);
+    }
+
     private List<StoredApiKey> apiKeysOf(String userId) {
         String prefix = userId + "/";
         return apiKeys.scan(k -> k.startsWith(prefix)).stream()

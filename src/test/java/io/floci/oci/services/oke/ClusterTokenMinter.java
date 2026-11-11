@@ -1,11 +1,15 @@
 package io.floci.oci.services.oke;
 
+import io.floci.oci.core.auth.OciRequestSignature;
+import io.floci.oci.testing.TestKeys;
+
+import java.math.BigInteger;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
-import java.security.KeyPairGenerator;
 import java.security.Signature;
+import java.security.interfaces.RSAPublicKey;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -18,20 +22,31 @@ import java.util.Locale;
  * {@code https://containerengine.<region>.oraclecloud.com/cluster_request/<cluster-ocid>} over
  * {@code date (request-target) host} (oci-python-sdk {@code signer.py:257}), put the
  * {@code authorization} and {@code date} on the URL form-encoded like Python's {@code urlencode},
- * then base64url-encode the URL with padding.
+ * then base64url-encode the URL with padding. API-key tokens carry the real fingerprint of
+ * {@link #KEY_PAIR}, so uploading {@link #publicKeyPem()} for a user makes that user's tokens verify.
  */
 final class ClusterTokenMinter {
 
     /** Python's {@code email.utils.formatdate(usegmt=True)}: always two-digit day, literal GMT. */
     private static final DateTimeFormatter RFC_1123 =
             DateTimeFormatter.ofPattern("EEE, dd MMM yyyy HH:mm:ss 'GMT'", Locale.US).withZone(ZoneOffset.UTC);
-    private static final KeyPair KEY_PAIR = generateKeyPair();
+    static final KeyPair KEY_PAIR = TestKeys.rsaKeyPair();
 
     private ClusterTokenMinter() {
     }
 
+    /** The PEM to upload as the signing key's API key. */
+    static String publicKeyPem() {
+        return TestKeys.pem(KEY_PAIR.getPublic());
+    }
+
+    /** The fingerprint OCI computes for {@link #KEY_PAIR}, as it appears in the keyId. */
+    static String fingerprint() {
+        return OciRequestSignature.fingerprint(KEY_PAIR.getPublic());
+    }
+
     static String mint(String region, String clusterId, String tenancyId, String userId, Instant signedAt) {
-        return mintWithKeyId(region, clusterId, tenancyId + "/" + userId + "/aa:bb:cc", signedAt);
+        return mintWithKeyId(region, clusterId, tenancyId + "/" + userId + "/" + fingerprint(), signedAt);
     }
 
     /** {@code oci ce cluster generate-token --auth security_token}: the keyId is {@code ST$<jwt>}. */
@@ -39,14 +54,36 @@ final class ClusterTokenMinter {
         return mintWithKeyId(region, clusterId, "ST$" + securityToken, signedAt);
     }
 
+    /** Like {@link #mintWithSecurityToken}, signed with the session key pair the token's {@code jwk} names. */
+    static String mintWithSecurityToken(String region, String clusterId, String securityToken, Instant signedAt,
+                                        KeyPair sessionKey) {
+        return mint(region, clusterId, "ST$" + securityToken, signedAt, sessionKey);
+    }
+
     static String mintWithKeyId(String region, String clusterId, String keyId, Instant signedAt) {
+        return mint(region, clusterId, keyId, signedAt, KEY_PAIR);
+    }
+
+    static String mint(String region, String clusterId, String keyId, Instant signedAt, KeyPair signer) {
         String host = "containerengine." + region + ".oraclecloud.com";
         String path = "/cluster_request/" + clusterId;
         String date = RFC_1123.format(signedAt);
-        String authorization = authorization(keyId, signature(date, path, host));
+        String authorization = authorization(keyId, signature(date, path, host, signer));
         return encode("https://" + host + path
                 + "?authorization=" + URLEncoder.encode(authorization, StandardCharsets.UTF_8)
                 + "&date=" + URLEncoder.encode(date, StandardCharsets.UTF_8));
+    }
+
+    /**
+     * A session token's {@code jwk} claim for {@code key}, as oci-cli builds it
+     * ({@code cli_util.py}: {@code {"kty":"RSA","n":...,"e":...,"kid":"Ignored"}}).
+     */
+    static String jwk(KeyPair key) {
+        RSAPublicKey publicKey = (RSAPublicKey) key.getPublic();
+        Base64.Encoder url = Base64.getUrlEncoder().withoutPadding();
+        return "{\"kty\":\"RSA\",\"n\":\"" + url.encodeToString(unsigned(publicKey.getModulus()))
+                + "\",\"e\":\"" + url.encodeToString(unsigned(publicKey.getPublicExponent()))
+                + "\",\"kid\":\"Ignored\"}";
     }
 
     static String authorization(String keyId, String signature) {
@@ -58,25 +95,25 @@ final class ClusterTokenMinter {
         return Base64.getUrlEncoder().encodeToString(url.getBytes(StandardCharsets.UTF_8));
     }
 
-    private static String signature(String date, String path, String host) {
+    private static String signature(String date, String path, String host, KeyPair signer) {
         String signingString = "date: " + date + "\n(request-target): get " + path + "\nhost: " + host;
         try {
-            Signature signer = Signature.getInstance("SHA256withRSA");
-            signer.initSign(KEY_PAIR.getPrivate());
-            signer.update(signingString.getBytes(StandardCharsets.UTF_8));
-            return Base64.getEncoder().encodeToString(signer.sign());
+            Signature rsa = Signature.getInstance("SHA256withRSA");
+            rsa.initSign(signer.getPrivate());
+            rsa.update(signingString.getBytes(StandardCharsets.UTF_8));
+            return Base64.getEncoder().encodeToString(rsa.sign());
         } catch (GeneralSecurityException e) {
             throw new IllegalStateException("Cannot sign the test token", e);
         }
     }
 
-    private static KeyPair generateKeyPair() {
-        try {
-            KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-            generator.initialize(2048);
-            return generator.generateKeyPair();
-        } catch (GeneralSecurityException e) {
-            throw new IllegalStateException("Cannot generate the test signing key", e);
+    private static byte[] unsigned(BigInteger value) {
+        byte[] bytes = value.toByteArray();
+        if (bytes[0] != 0) {
+            return bytes;
         }
+        byte[] trimmed = new byte[bytes.length - 1];
+        System.arraycopy(bytes, 1, trimmed, 0, trimmed.length);
+        return trimmed;
     }
 }

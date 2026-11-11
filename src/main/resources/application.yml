@@ -123,6 +123,7 @@ floci-oci:
       kubeconfig-auth: exec  # exec = real OKE `oci ce cluster generate-token`; token = static bearer token
       endpoint-mode: host    # host = https://127.0.0.1:<hostPort>; network = sidecar container name (floci-oci in a container)
       ready-timeout-seconds: 300
+      token-verification: known-keys  # known-keys = verify tokens signed with uploaded API keys; strict = only those; off = never verify
     psql:
       enabled: true
       mock: false            # true = no Docker; DB systems are management-plane only

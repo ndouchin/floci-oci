@@ -357,6 +357,19 @@ public interface EmulatorConfig {
              */
             @WithDefault("300")
             int readyTimeoutSeconds();
+
+            /**
+             * How the token webhook checks the signature of {@code oci ce cluster generate-token}
+             * tokens. {@code known-keys}: a token signed with an API key uploaded to identity (or with
+             * the session key of a known user's session token) is verified and its caller mapped as
+             * OKE maps IAM users (user OCID, IAM group OCIDs, {@code system:masters} only for
+             * {@code manage clusters} holders); a token signed with any other key is accepted as
+             * cluster-admin, as before. {@code strict}: only verified tokens are accepted. {@code off}:
+             * signatures are never checked and every caller is cluster-admin.
+             * Env: FLOCI_OCI_SERVICES_OKE_TOKEN_VERIFICATION
+             */
+            @WithDefault("known-keys")
+            String tokenVerification();
         }
     }
 

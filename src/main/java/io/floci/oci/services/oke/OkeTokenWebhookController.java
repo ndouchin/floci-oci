@@ -1,6 +1,5 @@
 package io.floci.oci.services.oke;
 
-import io.floci.oci.core.auth.AuthContext;
 import io.floci.oci.services.oke.model.StoredOkeCluster;
 import jakarta.inject.Inject;
 import jakarta.ws.rs.Consumes;
@@ -58,7 +57,7 @@ public class OkeTokenWebhookController {
 
         Optional<StoredOkeCluster> cluster = service.findCluster(tenancyId, clusterId)
                 .filter(found -> tenancyId.equals(found.getTenancyId()));
-        Optional<AuthContext> caller = cluster.flatMap(found -> validator.validate(token, found));
+        Optional<OkeCaller> caller = cluster.flatMap(found -> validator.validate(token, found));
         if (caller.isEmpty()) {
             return Response.ok(Map.of(
                     "apiVersion", apiVersion,
@@ -71,8 +70,8 @@ public class OkeTokenWebhookController {
                 "status", Map.of(
                         "authenticated", true,
                         "user", Map.of(
-                                "username", caller.get().userId(),
-                                "uid", caller.get().userId(),
+                                "username", caller.get().principalId(),
+                                "uid", caller.get().principalId(),
                                 "groups", List.of("system:masters", "system:authenticated"))))).build();
     }
 }
